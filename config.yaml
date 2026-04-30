@@ -8,6 +8,7 @@ dev-root: /Users/maxwilliams/dev
 # to a bundle directory (one containing manifest.yaml).
 bundles:
   pm-loop: /Users/maxwilliams/dev/pm-loop
+  build-loop: /Users/maxwilliams/dev/build-loop
   shoe-makers: /Users/maxwilliams/dev/shoe-makers/bundle
   octowiki: /Users/maxwilliams/dev/octowiki/bundle
 projects:
