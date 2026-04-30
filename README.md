@@ -130,6 +130,35 @@ Drift legend:
 The `bun run pm-loop ...` script is kept as an alias for back-compat; it
 just calls the same CLI with the default `--kind pm-loop`.
 
+## Orchestrator and client
+
+meta is two things at once:
+
+- **Orchestrator.** It ships the `bundle` CLI that installs canonical
+  workflow bundles into other projects, manages drift, and pulls
+  updates safely. Other repos depend on meta to install bundles.
+- **Client.** It is itself a target for those same bundles. The wiki
+  skills under `.claude/skills/octowiki-*` and the canonical
+  `wiki/pages/category-taxonomy.md` were installed via
+  `bundle install --kind octowiki` against this repo. They are tracked
+  in `.octowiki.lock`. If the canonical octowiki bundle changes upstream,
+  `bundle status --kind octowiki .` will report it here, and
+  `bundle update --kind octowiki .` will pull it in.
+
+This dual role keeps the contract honest: any change to a bundle's shape
+that breaks consumers will break meta first, since meta is also a consumer.
+
+Currently installed bundles in this repo:
+
+| Kind | Lockfile | Provides |
+| --- | --- | --- |
+| `octowiki` | `.octowiki.lock` | OctoWiki skills + canonical category taxonomy |
+
+Available but not installed (would clutter without a real workflow yet):
+
+- `pm-loop` — once meta accumulates a roadmap that benefits from the deterministic selector + heartbeat, install it.
+- `shoe-makers` — once meta has tests and invariants worth running an overnight code-health loop against.
+
 ## Status
 
 Early. Built to support an in-sequence PM workflow that already exists.

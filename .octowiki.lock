@@ -1,0 +1,29 @@
+{
+  "bundle": "octowiki",
+  "version": "0.1.0",
+  "source_repo": "/Users/maxwilliams/dev/octowiki/bundle",
+  "source_sha": "450139724bfd3203ff2c15f4ff87cef53d5c95f7",
+  "installed_at": "2026-04-30T12:01:46.916Z",
+  "files": [
+    {
+      "source": "skills/octowiki-add-page/SKILL.md",
+      "target": ".claude/skills/octowiki-add-page/SKILL.md",
+      "hash": "897c78e03adb885ebb16a2bc8b90955fc18361ad3aeb75e473905c0ddd27d055"
+    },
+    {
+      "source": "skills/octowiki-batch-import/SKILL.md",
+      "target": ".claude/skills/octowiki-batch-import/SKILL.md",
+      "hash": "d3acc4cfa34ca70e75b0e5d91b37f0881e86535f826f6eda98ccbb1c5ba891f0"
+    },
+    {
+      "source": "skills/octowiki-invariants/SKILL.md",
+      "target": ".claude/skills/octowiki-invariants/SKILL.md",
+      "hash": "c93ea55422fe31952b3a6e2fd607be7f6532111b20d94dd3f0f2035b9c4d4f3f"
+    },
+    {
+      "source": "templates/category-taxonomy.md",
+      "target": "wiki/pages/category-taxonomy.md",
+      "hash": "cb0731c89a92e2629a550b15a7a54f6957f053387c38e002e147f19f6f4747f2"
+    }
+  ]
+}

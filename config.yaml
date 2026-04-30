@@ -9,6 +9,7 @@ dev-root: /Users/maxwilliams/dev
 bundles:
   pm-loop: /Users/maxwilliams/dev/pm-loop
   shoe-makers: /Users/maxwilliams/dev/shoe-makers/bundle
+  octowiki: /Users/maxwilliams/dev/octowiki/bundle
 projects:
   - name: in-sequence
     path: /Users/maxwilliams/dev/in-sequence
