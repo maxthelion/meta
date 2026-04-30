@@ -153,11 +153,15 @@ Currently installed bundles in this repo:
 | Kind | Lockfile | Provides |
 | --- | --- | --- |
 | `octowiki` | `.octowiki.lock` | OctoWiki skills + canonical category taxonomy |
+| `pm-loop` | `.pm-loop.lock` | Deterministic roadmap selector, `pm-next-action` skill, `pm-assistant` agent role, `capture-clarification` / `capture-feedback` / `commit-roadmap-action` / `promote-ready-item-to-worktree` helpers |
 
-Available but not installed (would clutter without a real workflow yet):
+To activate the pm-loop in this repo, create `docs/roadmap/<feature-slug>/README.md`
+with the standard frontmatter (`id`, `title`, `status: inventory`, ...) and run
+`scripts/roadmap/next-roadmap-actions.sh` — see `docs/working-through-a-roadmap.md`.
 
-- `pm-loop` — once meta accumulates a roadmap that benefits from the deterministic selector + heartbeat, install it.
-- `shoe-makers` — once meta has tests and invariants worth running an overnight code-health loop against.
+Available but not installed:
+
+- `shoe-makers` — install once meta has tests and invariants worth running an overnight code-health loop against.
 
 ## Status
 
