@@ -1,0 +1,27 @@
+# Central project registry for the meta hub.
+# Each project path is scanned for an optional .meta.yaml manifest.
+# Without a manifest, plugins are auto-detected by convention.
+port: 7777
+dev-root: /Users/maxwilliams/dev
+projects:
+  - name: in-sequence
+    path: /Users/maxwilliams/dev/in-sequence
+    status: active
+  - name: octowiki
+    path: /Users/maxwilliams/dev/octowiki
+    status: active
+  - name: octoclean
+    path: /Users/maxwilliams/dev/codecleaner
+    status: active
+  - name: shoe-makers
+    path: /Users/maxwilliams/dev/shoe-makers
+    status: active
+  - name: citygenerator
+    path: /Users/maxwilliams/dev/citygenerator
+    status: active
+  - name: octotest
+    path: /Users/maxwilliams/dev/octotest
+    status: dormant
+  - name: blog
+    path: /Users/maxwilliams/dev/blog.maxthelion.me-2026
+    status: active
