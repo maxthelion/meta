@@ -356,10 +356,15 @@ Write `architecture.md` with:
 
 - The important application invariants the feature must preserve.
 - The lightweight data shape or runtime state model that should support the UX.
+- Small Mermaid diagrams that highlight any proposed data model changes, pipeline/data-flow changes, and component responsibility boundaries.
 - What should remain transient versus what should be persisted in the document.
 - How the feature should avoid broad document rewrites, duplicated code paths, or UI-only state becoming playback truth.
 - Any existing local patterns to follow, such as array-buffer style sequencer data structures, runtime snapshots, or small focused document deltas.
 - Concrete architecture questions that must be answered before spec.
+
+The diagrams should be explanatory, not decorative. Use them to show what is
+new, what changes, and what stays as-is so the user can parse the recommendation
+quickly before reading the detailed guardrails.
 
 The architecture pass must inspect the relevant production code and project guidelines before recommending a course of action. Start with:
 

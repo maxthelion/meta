@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ActionDef, ActionRequest, ActionResult, Plugin, Project } from "../types.ts";
@@ -33,6 +34,44 @@ interface FeatureItem {
   prototypeCount: number;
 }
 
+interface ArchitectureDiagram {
+  index: number;
+  title: string;
+  source: string;
+  kinds: string[];
+}
+
+interface ArchitectureDiagramInventory {
+  diagrams: ArchitectureDiagram[];
+  coverage: Record<string, boolean>;
+}
+
+interface PromotionState {
+  branch: string;
+  worktree: string;
+  branchExists: boolean;
+  worktreeExists: boolean;
+  buildPlans: string[];
+  promoted: boolean;
+}
+
+interface BuildWorktree {
+  name: string;
+  path: string;
+  branch: string;
+  head: string;
+  featureId: string;
+  featureSlug: string;
+  featureTitle: string;
+  buildPlans: string[];
+  nextAction: string;
+  workItemPresent: boolean;
+  critiqueCount: number;
+  inboxCount: number;
+  dirtyCount: number;
+  openBuildScript: string | null;
+}
+
 const ARTIFACT_FILES = [
   "notes.md",
   "user-stories.md",
@@ -44,6 +83,27 @@ const ARTIFACT_FILES = [
   "plan.md",
   "implementation-handoff.md",
   "open-questions.md",
+];
+
+const ARCHITECTURE_DIAGRAM_KINDS = [
+  {
+    id: "data-model",
+    label: "Data model",
+    hint: "Persisted or runtime data shape changes.",
+    pattern: /\b(data|model|schema|persisted?|document|runtime state|state shape)\b/i,
+  },
+  {
+    id: "pipeline",
+    label: "Pipeline / flow",
+    hint: "Playback, rendering, synchronization, import/export, or processing paths.",
+    pattern: /\b(pipeline|flow|playback|render(?:ing)?|sync(?:hronization)?|import|export|process(?:ing)?|engine)\b/i,
+  },
+  {
+    id: "responsibility",
+    label: "Responsibilities",
+    hint: "Component, module, ownership, or boundary changes.",
+    pattern: /\b(component|module|boundary|ownership|responsibilit(?:y|ies)|service|controller|view)\b/i,
+  },
 ];
 
 function roadmapPaths(project: Project): RoadmapPaths | null {
@@ -114,6 +174,35 @@ function prototypeCount(featureDir: string): number {
   }
 }
 
+function headingBefore(text: string, index: number): string | null {
+  const before = text.slice(0, index).split("\n").slice(-8).reverse();
+  const heading = before.find((line) => /^#{2,6}\s+\S/.test(line.trim()));
+  return heading ? heading.replace(/^#{2,6}\s+/, "").trim() : null;
+}
+
+function architectureDiagramInventory(featureDir: string): ArchitectureDiagramInventory {
+  const file = join(featureDir, "architecture.md");
+  const coverage = Object.fromEntries(ARCHITECTURE_DIAGRAM_KINDS.map((kind) => [kind.id, false])) as Record<string, boolean>;
+  if (!existsSync(file)) return { diagrams: [], coverage };
+
+  const text = readFileSync(file, "utf8");
+  const diagrams: ArchitectureDiagram[] = [];
+  const re = /```mermaid\s*\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const source = match[1]!.trim();
+    const title = headingBefore(text, match.index) ?? `Diagram ${diagrams.length + 1}`;
+    const haystack = `${title}\n${source}`;
+    const kinds = ARCHITECTURE_DIAGRAM_KINDS
+      .filter((kind) => kind.pattern.test(haystack))
+      .map((kind) => kind.id);
+    for (const kind of kinds) coverage[kind] = true;
+    diagrams.push({ index: diagrams.length + 1, title, source, kinds });
+  }
+
+  return { diagrams, coverage };
+}
+
 function readFeatures(roadmapRoot: string): FeatureItem[] {
   const items: FeatureItem[] = [];
   for (const dir of listFeatureDirs(roadmapRoot)) {
@@ -178,6 +267,125 @@ function findFeatureSlugByTitle(items: FeatureItem[], title: string): string | n
   return match?.slug ?? null;
 }
 
+function isReadyForPromotion(item: FeatureItem): boolean {
+  return (
+    item.stage === "ready-for-build-queue" ||
+    item.stage === "ready-for-build" ||
+    item.status === "ready-for-build"
+  );
+}
+
+function promotionReadiness(item: FeatureItem): { ready: boolean; missing: string[] } {
+  const required = ["implementation-handoff.md", "spec.md", "plan.md"];
+  const missing = required.filter((file) => !item.hasArtifact[file]);
+  return { ready: missing.length === 0 && isReadyForPromotion(item), missing };
+}
+
+function branchExists(project: Project, branch: string): boolean {
+  try {
+    execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+      cwd: project.path,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitOutput(cwd: string, args: string[]): string {
+  try {
+    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function countMarkdownFiles(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  try {
+    return readdirSync(dir).filter((file) => file.endsWith(".md")).length;
+  } catch {
+    return 0;
+  }
+}
+
+function readNextAction(worktreePath: string): string {
+  const file = join(worktreePath, ".claude", "state", "next-action.md");
+  if (!existsSync(file)) return "unknown";
+  const text = readFileSync(file, "utf8");
+  const match = text.match(/^## Action:\s*(.+)$/m);
+  return match ? match[1]!.trim() : "unknown";
+}
+
+function promotionState(project: Project, item: FeatureItem): PromotionState {
+  const branch = `auto/roadmap-${item.id}-${item.slug}`;
+  const worktree = join(project.path, ".worktrees", `roadmap-${item.id}-${item.slug}`);
+  const worktreeExists = existsSync(worktree);
+  const planDir = join(worktree, "docs", "plans");
+  const buildPlans = worktreeExists && existsSync(planDir)
+    ? readdirSync(planDir)
+        .filter((file) => file.endsWith(".md") && file.includes(`roadmap-${item.id}-${item.slug}`))
+        .sort()
+    : [];
+  const branchFound = branchExists(project, branch);
+
+  return {
+    branch,
+    worktree,
+    branchExists: branchFound,
+    worktreeExists,
+    buildPlans,
+    promoted: branchFound || worktreeExists || buildPlans.length > 0,
+  };
+}
+
+function listBuildWorktrees(project: Project, items: FeatureItem[]): BuildWorktree[] {
+  const root = join(project.path, ".worktrees");
+  if (!existsSync(root)) return [];
+
+  const byIdAndSlug = new Map(items.map((item) => [`${item.id}:${item.slug}`, item]));
+  const out: BuildWorktree[] = [];
+
+  for (const name of readdirSync(root).sort()) {
+    const match = name.match(/^roadmap-([0-9]+)-(.+)$/);
+    if (!match) continue;
+
+    const path = join(root, name);
+    if (!existsSync(path) || !statSync(path).isDirectory()) continue;
+
+    const featureId = match[1]!;
+    const featureSlug = match[2]!;
+    const item = byIdAndSlug.get(`${featureId}:${featureSlug}`);
+    const planDir = join(path, "docs", "plans");
+    const buildPlans = existsSync(planDir)
+      ? readdirSync(planDir)
+          .filter((file) => file.endsWith(".md") && file.includes(`roadmap-${featureId}-${featureSlug}`))
+          .sort()
+      : [];
+
+    const openBuildPath = join(path, "scripts", "open-latest-build.sh");
+    out.push({
+      name,
+      path,
+      branch: gitOutput(path, ["branch", "--show-current"]) || `auto/roadmap-${featureId}-${featureSlug}`,
+      head: gitOutput(path, ["rev-parse", "--short", "HEAD"]) || "unknown",
+      featureId,
+      featureSlug,
+      featureTitle: item?.title ?? featureSlug,
+      buildPlans,
+      nextAction: readNextAction(path),
+      workItemPresent: existsSync(join(path, ".claude", "state", "work-item.md")),
+      critiqueCount: countMarkdownFiles(join(path, ".claude", "state", "review-queue")),
+      inboxCount: countMarkdownFiles(join(path, ".claude", "state", "inbox")),
+      dirtyCount: gitOutput(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length,
+      openBuildScript: existsSync(openBuildPath) ? openBuildPath : null,
+    });
+  }
+
+  return out;
+}
+
 function renderNextActions(project: Project, items: FeatureItem[], paths: RoadmapPaths): string {
   const file = join(paths.root, "next-actions.md");
   if (!existsSync(file)) {
@@ -232,6 +440,150 @@ function renderNextActions(project: Project, items: FeatureItem[], paths: Roadma
     </div>`;
 }
 
+function renderPromotionPanel(project: Project, items: FeatureItem[], paths: RoadmapPaths): string {
+  const readyItems = items
+    .filter(isReadyForPromotion)
+    .map((item) => ({ item, state: promotionState(project, item) }));
+  if (readyItems.length === 0) {
+    return `
+      <section class="panel wide promotion-panel">
+        <h2>Promotion Queue</h2>
+        <p class="muted">No roadmap items are currently marked <code>ready-for-build-queue</code>.</p>
+      </section>`;
+  }
+
+  const cards = readyItems
+    .map(({ item: it, state }) => {
+      const readiness = promotionReadiness(it);
+      const sourcePath = `docs/roadmap/${it.slug}/`;
+      const artifactLinks = ["implementation-handoff.md", "spec.md", "plan.md", "architecture.md", "architecture-review.md"]
+        .filter((file) => it.hasArtifact[file])
+        .map((file) => {
+          const abs = join(it.dir, file);
+          return `<li><a href="${escape(fileUrl(abs))}">${escape(file)}</a></li>`;
+        })
+        .join("");
+
+      const missing = readiness.missing.length > 0
+        ? `<p class="attention">Missing required artifact(s): ${escape(readiness.missing.join(", "))}</p>`
+        : `<p class="ok">Required handoff artifacts are present.</p>`;
+
+      const command = `scripts/roadmap/promote-ready-item-to-worktree.sh ${it.id}`;
+      const buildPlanLinks = state.buildPlans
+        .map((file) => {
+          const abs = join(state.worktree, "docs", "plans", file);
+          return `<li><a href="${escape(fileUrl(abs))}">${escape(file)}</a></li>`;
+        })
+        .join("");
+
+      const promoteControl = state.promoted
+        ? `
+          <div class="promotion-state ok">Promoted</div>
+          <dl class="compact-list">
+            <dt>Branch</dt><dd><code>${escape(state.branch)}</code>${state.branchExists ? "" : ` <span class="attention">not found</span>`}</dd>
+            <dt>Worktree</dt><dd><a href="${escape(fileUrl(state.worktree))}">${escape(state.worktree)}</a>${state.worktreeExists ? "" : ` <span class="attention">not found</span>`}</dd>
+          </dl>
+          ${buildPlanLinks ? `<h4>Build Plan</h4><ul>${buildPlanLinks}</ul>` : `<p class="muted">No generated build plan found in the promoted worktree.</p>`}`
+        : paths.scripts.promote && readiness.ready
+          ? `
+          <form class="inline-action-form" method="post" action="/p/${escape(project.slug)}/action/promote-ready-item">
+            <input type="hidden" name="item-id" value="${escape(it.id)}">
+            <button type="submit">Promote To Build Worktree</button>
+          </form>`
+          : `<code>${escape(command)}</code>`;
+
+      return `
+        <article class="promotion-card ${state.promoted ? "promoted" : "ready"}">
+          <div>
+            <h3><a href="/p/${escape(project.slug)}/roadmap/${escape(it.slug)}">Item ${escape(it.id)}: ${escape(it.title)}</a></h3>
+            <p class="muted"><code>${escape(sourcePath)}</code></p>
+            <p><span class="badge">${escape(it.stage)}</span> <span class="badge">${escape(it.status)}</span></p>
+            ${missing}
+          </div>
+          <div>
+            <h4>Authoritative Inputs</h4>
+            <ul>${artifactLinks || `<li class="muted">No build artifacts found.</li>`}</ul>
+          </div>
+          <div class="promotion-action">
+            <h4>Promotion</h4>
+            ${promoteControl}
+            <p class="muted">Promotion creates the implementation bridge; builders should consume the handoff before deeper artifacts.</p>
+          </div>
+        </article>`;
+    })
+    .join("");
+
+  return `
+    <section class="panel wide promotion-panel">
+      <h2>Promotion Queue</h2>
+      <p class="muted">Roadmap items with completed PM artifacts, split between promotable items and items already handed to the implementation loop.</p>
+      <div class="promotion-list">${cards}</div>
+    </section>`;
+}
+
+function renderBuildWorktreesPanel(project: Project, items: FeatureItem[]): string {
+  const worktrees = listBuildWorktrees(project, items);
+  if (worktrees.length === 0) {
+    return `
+      <section class="panel wide build-worktrees-panel">
+        <h2>Implementation Worktrees</h2>
+        <p class="muted">No promoted roadmap implementation worktrees were found.</p>
+      </section>`;
+  }
+
+  const rows = worktrees
+    .map((wt) => {
+      const planLinks = wt.buildPlans
+        .map((file) => `<a href="${escape(fileUrl(join(wt.path, "docs", "plans", file)))}">${escape(file)}</a>`)
+        .join("<br>");
+      const actionClass =
+        wt.nextAction === "verify-tests" || wt.nextAction === "fix-critique" || wt.nextAction === "fix-tests"
+          ? "attention"
+          : wt.nextAction === "execute-work-item" || wt.nextAction === "promote-plan-task-to-work-item"
+            ? "ok"
+            : "muted";
+      const counters = [
+        wt.workItemPresent ? `<span class="badge active">work item</span>` : "",
+        wt.critiqueCount > 0 ? `<span class="badge attention-badge">${wt.critiqueCount} critique${wt.critiqueCount === 1 ? "" : "s"}</span>` : "",
+        wt.inboxCount > 0 ? `<span class="badge attention-badge">${wt.inboxCount} inbox</span>` : "",
+        wt.dirtyCount > 0 ? `<span class="badge attention-badge">${wt.dirtyCount} dirty</span>` : "",
+      ].filter(Boolean).join(" ");
+
+      const openBuildButton = wt.openBuildScript
+        ? `<form class="inline-action-form" method="post" action="/p/${escape(project.slug)}/action/open-build">
+             <input type="hidden" name="worktree" value="${escape(wt.name)}">
+             <button type="submit" title="Run scripts/open-latest-build.sh in this worktree">Open build</button>
+           </form>`
+        : `<span class="muted">no script</span>`;
+
+      return `
+        <tr>
+          <td>
+            <a href="/p/${escape(project.slug)}/roadmap/${escape(wt.featureSlug)}">Item ${escape(wt.featureId)}: ${escape(wt.featureTitle)}</a>
+            <div class="muted"><code>${escape(wt.name)}</code></div>
+          </td>
+          <td><code>${escape(wt.branch)}</code><br><span class="muted">${escape(wt.head)}</span></td>
+          <td><span class="${actionClass}"><code>${escape(wt.nextAction)}</code></span><div>${counters}</div></td>
+          <td><a href="${escape(fileUrl(wt.path))}">${escape(wt.path)}</a></td>
+          <td>${planLinks || `<span class="muted">none</span>`}</td>
+          <td>${openBuildButton}</td>
+        </tr>`;
+    })
+    .join("");
+
+  return `
+    <section class="panel wide build-worktrees-panel">
+      <h2>Implementation Worktrees</h2>
+      <p class="muted">Promoted roadmap features currently handed to the implementation behaviour-tree loop.</p>
+      <table>
+        <thead>
+          <tr><th>Feature</th><th>Branch</th><th>BT action</th><th>Worktree</th><th>Build plan</th><th>Build</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </section>`;
+}
+
 function renderFeatureTable(project: Project, items: FeatureItem[]): string {
   if (items.length === 0) return `<p class="muted">No feature directories.</p>`;
   const rows = items
@@ -272,12 +624,16 @@ function renderFeatureTable(project: Project, items: FeatureItem[]): string {
     </section>`;
 }
 
-function renderSummary(items: FeatureItem[]): string {
+function renderSummary(project: Project, items: FeatureItem[]): string {
   const totalPrototypes = items.reduce((s, it) => s + it.prototypeCount, 0);
   const openFeedback = items.reduce((s, it) => s + it.feedbackOpen, 0);
   const blocked = items.filter((it) => it.status === "blocked").length;
   const openQuestions = items.filter((it) => it.hasArtifact["open-questions.md"]).length;
-  const readyForBuild = items.filter((it) => it.stage === "ready-for-build-queue").length;
+  const promotionItems = items
+    .filter(isReadyForPromotion)
+    .map((item) => ({ item, state: promotionState(project, item) }));
+  const readyForBuild = promotionItems.filter(({ state }) => !state.promoted).length;
+  const promoted = promotionItems.filter(({ state }) => state.promoted).length;
 
   const card = (label: string, value: number, klass = "") =>
     `<div class="summary-item"><div class="label">${escape(label)}</div><div class="value ${klass}">${value}</div></div>`;
@@ -290,6 +646,7 @@ function renderSummary(items: FeatureItem[]): string {
       ${card("Blocked", blocked, blocked > 0 ? "attention" : "ok")}
       ${card("Open Questions", openQuestions, openQuestions > 0 ? "attention" : "ok")}
       ${card("Ready For Build", readyForBuild, "ok")}
+      ${card("Promoted", promoted, promoted > 0 ? "ok" : "")}
     </section>`;
 }
 
@@ -342,6 +699,53 @@ function renderActionForms(project: Project, paths: RoadmapPaths, items: Feature
     </section>`;
 }
 
+function renderArchitectureDiagramPanel(featureDir: string): string {
+  const inventory = architectureDiagramInventory(featureDir);
+  const requirementRows = ARCHITECTURE_DIAGRAM_KINDS
+    .map((kind) => {
+      const present = inventory.coverage[kind.id];
+      return `
+        <tr>
+          <td>${present ? `<span class="ok">present</span>` : `<span class="attention">missing</span>`}</td>
+          <td><strong>${escape(kind.label)}</strong></td>
+          <td class="muted">${escape(kind.hint)}</td>
+        </tr>`;
+    })
+    .join("");
+
+  const diagramCards = inventory.diagrams.length > 0
+    ? inventory.diagrams
+        .map((diagram) => {
+          const kinds = diagram.kinds.length > 0
+            ? diagram.kinds
+                .map((kind) => ARCHITECTURE_DIAGRAM_KINDS.find((k) => k.id === kind)?.label ?? kind)
+                .join(", ")
+            : "uncategorized";
+          return `
+            <figure class="architecture-diagram-card">
+              <figcaption>
+                <strong>${escape(diagram.title)}</strong>
+                <span class="muted">${escape(kinds)}</span>
+              </figcaption>
+              <div class="mermaid">${escape(diagram.source)}</div>
+            </figure>`;
+        })
+        .join("")
+    : `<p class="muted">No Mermaid diagrams found in <code>architecture.md</code>.</p>`;
+
+  return `
+    <section class="panel architecture-diagrams">
+      <h2>Architecture Diagrams</h2>
+      <p class="muted">Expected Mermaid diagrams from <code>architecture.md</code>: data model, pipeline/data-flow, and component responsibility boundaries.</p>
+      <table>
+        <thead><tr><th>Status</th><th>Diagram Type</th><th>Expected Signal</th></tr></thead>
+        <tbody>${requirementRows}</tbody>
+      </table>
+      <h3>Rendered Diagrams</h3>
+      <div class="architecture-diagram-list">${diagramCards}</div>
+    </section>`;
+}
+
 export function renderFeaturePage(project: Project, slug: string): string | null {
   const paths = roadmapPaths(project);
   if (!paths) return null;
@@ -367,6 +771,7 @@ export function renderFeaturePage(project: Project, slug: string): string | null
   const hasUxReview = existsSync(join(dir, "ux-review.md"));
   const hasArchitecture = existsSync(join(dir, "architecture.md"));
   const hasArchReview = existsSync(join(dir, "architecture-review.md"));
+  const captureFeedbackScript = paths.scripts.captureFeedback;
 
   function relPath(absPath: string): string {
     return absPath.slice(project.path.length + 1);
@@ -380,7 +785,7 @@ export function renderFeaturePage(project: Project, slug: string): string | null
   }
 
   function reviewForm(appliesTo: string, label: string): string {
-    if (!paths.scripts.captureFeedback || fm?.data.id === undefined) return "";
+    if (!captureFeedbackScript || fm?.data.id === undefined) return "";
     return `
       <form class="action-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback">
         <h3>${escape(label)}</h3>
@@ -412,7 +817,7 @@ export function renderFeaturePage(project: Project, slug: string): string | null
     activeReview = `
       <section class="panel wide review-panel">
         <h2>Review: Architecture</h2>
-        <p class="muted">Review the proposed data/runtime shape, what is transient vs persisted, guardrails, and unresolved questions.</p>
+        <p class="muted">Review the proposed data/runtime shape, pipeline/data-flow, component boundaries, what is transient vs persisted, guardrails, and unresolved questions.</p>
         <div class="review-grid">
           <div class="review-frames">
             <div class="prototype-frame">
@@ -475,7 +880,7 @@ export function renderFeaturePage(project: Project, slug: string): string | null
   }
 
   let actions = "";
-  if (paths.scripts.captureFeedback && fm?.data.id !== undefined) {
+  if (captureFeedbackScript && fm?.data.id !== undefined) {
     actions = `
       <form class="action-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback">
         <h3>Add Feedback For This Feature</h3>
@@ -510,6 +915,7 @@ export function renderFeaturePage(project: Project, slug: string): string | null
     </section>
 
     ${activeReview}
+    ${hasArchitecture ? renderArchitectureDiagramPanel(dir) : ""}
 
     <section class="panel">
       <h2>Artefact Inventory</h2>
@@ -621,7 +1027,9 @@ export const roadmapPlugin: Plugin = {
     if (!paths) return `<p class="muted">No roadmap directory.</p>`;
     const items = readFeatures(paths.root);
     return `
-      ${renderSummary(items)}
+      ${renderSummary(ctx.project, items)}
+      ${renderPromotionPanel(ctx.project, items, paths)}
+      ${renderBuildWorktreesPanel(ctx.project, items)}
       ${renderNextActions(ctx.project, items, paths)}
       ${renderFeatureTable(ctx.project, items)}
       ${renderActionForms(ctx.project, paths, items)}`;
@@ -664,6 +1072,23 @@ export const roadmapPlugin: Plugin = {
         ],
       });
     }
+    if (paths.scripts.promote) {
+      out.push({
+        id: "promote-ready-item",
+        label: "Promote Ready Item",
+        fields: [
+          { name: "item-id", label: "Item ID", type: "text", required: true },
+        ],
+      });
+    }
+    // Always advertise open-build; per-worktree availability is checked at handle time.
+    out.push({
+      id: "open-build",
+      label: "Open latest build for a worktree",
+      fields: [
+        { name: "worktree", label: "Worktree name", type: "text", required: true },
+      ],
+    });
     return out;
   },
 
@@ -685,6 +1110,26 @@ export const roadmapPlugin: Plugin = {
       const text = req.values["text"];
       if (!itemId || !appliesTo || !text) return { ok: false, output: "Missing fields" };
       return runScript([paths.scripts.captureFeedback, itemId, appliesTo, text], cwd);
+    }
+
+    if (req.action === "promote-ready-item" && paths.scripts.promote) {
+      const itemId = req.values["item-id"];
+      if (!itemId) return { ok: false, output: "Missing item-id" };
+      return runScript([paths.scripts.promote, itemId], cwd);
+    }
+
+    if (req.action === "open-build") {
+      const wtName = req.values["worktree"];
+      if (!wtName) return { ok: false, output: "Missing worktree" };
+      // Defence in depth: refuse anything that escapes the .worktrees/ root.
+      if (wtName.includes("..") || wtName.includes("/")) {
+        return { ok: false, output: "Invalid worktree name" };
+      }
+      const wtPath = join(req.project.path, ".worktrees", wtName);
+      const scriptPath = join(wtPath, "scripts", "open-latest-build.sh");
+      if (!existsSync(wtPath)) return { ok: false, output: `Worktree not found: ${wtPath}` };
+      if (!existsSync(scriptPath)) return { ok: false, output: `Script not found: ${scriptPath}` };
+      return runScript([scriptPath], wtPath);
     }
 
     return { ok: false, output: `Unknown action ${req.action}` };
