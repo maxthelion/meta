@@ -38,21 +38,49 @@ interface Lockfile {
   files: LockEntry[];
 }
 
-const DEFAULT_BUNDLE = resolve(import.meta.dir, "..", "..", "..", "pm-loop");
+const META_CONFIG_PATH = resolve(import.meta.dir, "..", "..", "config.yaml");
+const DEV_ROOT = resolve(import.meta.dir, "..", "..", "..");
 
 interface Opts {
   command: string;
-  bundle: string;
+  bundle: string | null;
+  kind: string | null;
   target: string | null;
   force: boolean;
   dryRun: boolean;
   rest: string[];
 }
 
+function loadBundleRegistry(): Record<string, string> {
+  if (!existsSync(META_CONFIG_PATH)) return {};
+  try {
+    const cfg = YAML.parse(readFileSync(META_CONFIG_PATH, "utf8")) as {
+      bundles?: Record<string, string>;
+    };
+    return cfg.bundles ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveBundlePath(opts: Opts, defaultKind = "pm-loop"): string {
+  if (opts.bundle) return opts.bundle;
+  const registry = loadBundleRegistry();
+  const kind = opts.kind ?? defaultKind;
+  if (registry[kind]) return resolve(registry[kind]!);
+  // Fall back to a sibling directory under the dev root: ~/dev/<kind>(/bundle)?
+  const sibling = resolve(DEV_ROOT, kind);
+  if (existsSync(join(sibling, "manifest.yaml"))) return sibling;
+  const subdir = resolve(DEV_ROOT, kind, "bundle");
+  if (existsSync(join(subdir, "manifest.yaml"))) return subdir;
+  return sibling;
+}
+
 function parseArgs(argv: string[]): Opts {
   const opts: Opts = {
     command: "",
-    bundle: DEFAULT_BUNDLE,
+    bundle: null,
+    kind: null,
     target: null,
     force: false,
     dryRun: false,
@@ -68,6 +96,7 @@ function parseArgs(argv: string[]): Opts {
     if (a === "--force") opts.force = true;
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--bundle") opts.bundle = resolve(argv[++i]!);
+    else if (a === "--kind") opts.kind = argv[++i]!;
     else if (a === "-h" || a === "--help") {
       opts.command = "help";
       opts.rest.unshift(opts.command);
@@ -98,14 +127,25 @@ function loadManifest(bundlePath: string): Manifest {
   return YAML.parse(readFileSync(p, "utf8")) as Manifest;
 }
 
-function loadLock(target: string): Lockfile | null {
-  const p = join(target, ".pm-loop.lock");
-  if (!existsSync(p)) return null;
-  return JSON.parse(readFileSync(p, "utf8")) as Lockfile;
+function lockPath(target: string, bundleName: string): string {
+  return join(target, `.${bundleName}.lock`);
+}
+
+function loadLock(target: string, bundleName: string): Lockfile | null {
+  const candidates = [lockPath(target, bundleName)];
+  // Back-compat: the original CLI always wrote .pm-loop.lock.
+  if (bundleName !== "pm-loop") candidates.push(join(target, ".pm-loop.lock"));
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      const lock = JSON.parse(readFileSync(p, "utf8")) as Lockfile;
+      if (lock.bundle === bundleName) return lock;
+    }
+  }
+  return null;
 }
 
 function writeLock(target: string, lock: Lockfile): void {
-  writeFileSync(join(target, ".pm-loop.lock"), JSON.stringify(lock, null, 2) + "\n");
+  writeFileSync(lockPath(target, lock.bundle), JSON.stringify(lock, null, 2) + "\n");
 }
 
 type Status =
@@ -128,14 +168,14 @@ interface FileState {
 }
 
 function computeStates(opts: Opts): FileState[] {
-  const manifest = loadManifest(opts.bundle);
-  const lock = loadLock(opts.target!);
+  const manifest = loadManifest(opts.bundle!);
+  const lock = loadLock(opts.target!, manifest.name);
   const lockByTarget = new Map<string, LockEntry>();
   if (lock) for (const e of lock.files) lockByTarget.set(e.target, e);
 
   const states: FileState[] = [];
   for (const f of manifest.files) {
-    const src = join(opts.bundle, f.source);
+    const src = join(opts.bundle!, f.source);
     const dst = join(opts.target!, f.target);
     const bundleHash = existsSync(src) ? fileHash(src) : null;
     const targetHash = existsSync(dst) ? fileHash(dst) : null;
@@ -189,19 +229,30 @@ function pad(s: string, n: number): string {
 }
 
 function cmdHelp(): never {
-  console.log(`usage: pm-loop <command> [options] <project-path>
+  const registry = loadBundleRegistry();
+  const known =
+    Object.keys(registry).length > 0
+      ? Object.entries(registry)
+          .map(([k, v]) => `  --kind ${k}    ${v}`)
+          .join("\n")
+      : "  (none registered in meta/config.yaml — pass --bundle <path> directly)";
+  console.log(`usage: bundle <command> [options] <project-path>
 
 commands:
-  install   copy canonical files into a fresh project. writes .pm-loop.lock
+  install   copy canonical files into a fresh project. writes .<bundle>.lock
   status    report drift between bundle, lockfile, and target. exit code != 0 if drift
   update    apply bundle changes to files the project hasn't modified. refuse on conflicts
   diff      print unified diff between target and bundle for changed files
   help      this message
 
 options:
-  --bundle <path>   path to pm-loop repo (default: ${DEFAULT_BUNDLE})
+  --kind <name>     resolve bundle path from meta/config.yaml registry
+  --bundle <path>   explicit path to a bundle repo (overrides --kind)
   --force           overwrite local edits / conflicts (install, update)
   --dry-run         describe what would change without writing (install, update)
+
+registered bundle kinds:
+${known}
 
 drift legend:
   in sync           target == lock == bundle
@@ -216,15 +267,15 @@ drift legend:
 
 function requireTarget(opts: Opts): string {
   if (!opts.target) {
-    console.error("missing <project-path>. run 'pm-loop help' for usage.");
+    console.error("missing <project-path>. run 'bundle help' for usage.");
     process.exit(2);
   }
   if (!existsSync(opts.target)) {
     console.error(`target project not found at ${opts.target}`);
     process.exit(1);
   }
-  if (!existsSync(opts.bundle)) {
-    console.error(`bundle not found at ${opts.bundle}`);
+  if (!opts.bundle || !existsSync(opts.bundle)) {
+    console.error(`bundle not found at ${opts.bundle ?? "<unset>"} (resolve with --bundle or --kind)`);
     process.exit(1);
   }
   return opts.target;
@@ -246,7 +297,7 @@ function applyFile(bundle: string, target: string, state: FileState): LockEntry 
 
 function cmdInstall(opts: Opts): never {
   requireTarget(opts);
-  const manifest = loadManifest(opts.bundle);
+  const manifest = loadManifest(opts.bundle!);
   const states = computeStates(opts);
 
   // refuse on any pre-existing conflict unless --force
@@ -256,12 +307,12 @@ function cmdInstall(opts: Opts): never {
   if (blockers.length > 0 && !opts.force) {
     console.error("install would overwrite existing files:");
     for (const s of blockers) console.error(`  ${s.target}: ${statusLabel(s.status)}`);
-    console.error("re-run with --force to overwrite. or use 'pm-loop status' / 'update'.");
+    console.error("re-run with --force to overwrite. or use 'bundle status' / 'update'.");
     process.exit(3);
   }
 
   console.log(
-    `bundle: ${manifest.name}@${manifest.version} (sha ${gitSha(opts.bundle).slice(0, 7)})`,
+    `bundle: ${manifest.name}@${manifest.version} (sha ${gitSha(opts.bundle!).slice(0, 7)})`,
   );
   console.log(`target: ${opts.target}`);
   console.log(`files:  ${states.length}`);
@@ -277,29 +328,29 @@ function cmdInstall(opts: Opts): never {
       console.error(`  bundle file missing: ${s.source}`);
       process.exit(1);
     }
-    installed.push(applyFile(opts.bundle, opts.target!, s));
+    installed.push(applyFile(opts.bundle!, opts.target!, s));
     console.log(`  installed ${s.target}`);
   }
 
   writeLock(opts.target!, {
     bundle: manifest.name,
     version: manifest.version,
-    source_repo: opts.bundle,
-    source_sha: gitSha(opts.bundle),
+    source_repo: opts.bundle!,
+    source_sha: gitSha(opts.bundle!),
     installed_at: new Date().toISOString(),
     files: installed,
   });
-  console.log(`wrote ${join(opts.target!, ".pm-loop.lock")}`);
+  console.log(`wrote ${lockPath(opts.target!, manifest.name)}`);
   process.exit(0);
 }
 
 function cmdStatus(opts: Opts): never {
   requireTarget(opts);
-  const manifest = loadManifest(opts.bundle);
-  const lock = loadLock(opts.target!);
+  const manifest = loadManifest(opts.bundle!);
+  const lock = loadLock(opts.target!, manifest.name);
   const states = computeStates(opts);
 
-  const headerBundleSha = gitSha(opts.bundle).slice(0, 7);
+  const headerBundleSha = gitSha(opts.bundle!).slice(0, 7);
   console.log(
     `bundle: ${manifest.name}@${manifest.version} (sha ${headerBundleSha}) at ${opts.bundle}`,
   );
@@ -340,10 +391,10 @@ function cmdStatus(opts: Opts): never {
 
 function cmdUpdate(opts: Opts): never {
   requireTarget(opts);
-  const manifest = loadManifest(opts.bundle);
-  const lock = loadLock(opts.target!);
+  const manifest = loadManifest(opts.bundle!);
+  const lock = loadLock(opts.target!, manifest.name);
   if (!lock) {
-    console.error("no .pm-loop.lock found. use 'pm-loop install' for first install.");
+    console.error(`no .${manifest.name}.lock found. use 'bundle install' for first install.`);
     process.exit(2);
   }
   const states = computeStates(opts);
@@ -352,7 +403,7 @@ function cmdUpdate(opts: Opts): never {
   if (conflicts.length > 0 && !opts.force) {
     console.error("update blocked by conflicts (both target and bundle changed):");
     for (const s of conflicts) console.error(`  ${s.target}`);
-    console.error("re-run with --force to take the bundle version, or use 'pm-loop diff' to merge manually.");
+    console.error("re-run with --force to take the bundle version, or use 'bundle diff' to merge manually.");
     process.exit(3);
   }
 
@@ -375,7 +426,7 @@ function cmdUpdate(opts: Opts): never {
     process.exit(0);
   }
 
-  console.log(`bundle: ${manifest.name}@${manifest.version} (sha ${gitSha(opts.bundle).slice(0, 7)})`);
+  console.log(`bundle: ${manifest.name}@${manifest.version} (sha ${gitSha(opts.bundle!).slice(0, 7)})`);
   console.log(`target: ${opts.target}`);
   console.log(`applying ${toApply.length} file(s):`);
 
@@ -388,7 +439,7 @@ function cmdUpdate(opts: Opts): never {
   for (const e of lock.files) updated.set(e.target, e);
   for (const s of toApply) {
     if (s.status === "bundle-missing") continue;
-    const entry = applyFile(opts.bundle, opts.target!, s);
+    const entry = applyFile(opts.bundle!, opts.target!, s);
     updated.set(s.target, entry);
     console.log(`  applied ${s.target}  (${statusLabel(s.status)})`);
   }
@@ -396,12 +447,12 @@ function cmdUpdate(opts: Opts): never {
   writeLock(opts.target!, {
     bundle: manifest.name,
     version: manifest.version,
-    source_repo: opts.bundle,
-    source_sha: gitSha(opts.bundle),
+    source_repo: opts.bundle!,
+    source_sha: gitSha(opts.bundle!),
     installed_at: new Date().toISOString(),
     files: Array.from(updated.values()).sort((a, b) => a.target.localeCompare(b.target)),
   });
-  console.log(`updated ${join(opts.target!, ".pm-loop.lock")}`);
+  console.log(`updated ${lockPath(opts.target!, manifest.name)}`);
   process.exit(0);
 }
 
@@ -420,7 +471,7 @@ function cmdDiff(opts: Opts): never {
     process.exit(0);
   }
   for (const s of matching) {
-    const src = join(opts.bundle, s.source);
+    const src = join(opts.bundle!, s.source);
     const dst = join(opts.target!, s.target);
     console.log(`\n=== ${s.target}  (${statusLabel(s.status)}) ===`);
     const proc = Bun.spawnSync(["diff", "-u", dst, src], { stdout: "pipe", stderr: "pipe" });
@@ -430,6 +481,12 @@ function cmdDiff(opts: Opts): never {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+if (opts.command !== "help" && !opts.bundle) {
+  // Resolve --kind / sibling-default into a concrete bundle path. If neither
+  // --bundle nor --kind was given, default to pm-loop for back-compat with
+  // the previous CLI name.
+  opts.bundle = resolveBundlePath(opts);
+}
 switch (opts.command) {
   case "help":
     cmdHelp();

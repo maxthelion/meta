@@ -99,14 +99,23 @@ store. Actions write into the project repo via project-owned scripts.
 | `/p/<slug>/files/<rel-path>` | Serves project files (used by iframes) |
 | `/p/<slug>/action/<id>` | POST: shells out to project script |
 
-## pm-loop CLI
+## bundle CLI
 
-`bun run pm-loop -- <command> <project-path>` is a small CLI that manages
-[pm-loop](https://github.com/maxthelion/pm-loop) installs across projects.
+`bun run bundle -- <command> [--kind <name>] <project-path>` manages
+manifest-driven bundles across projects. It works on any bundle that ships
+a `manifest.yaml` describing where each canonical file installs in a target.
+Currently registered:
+
+- `--kind pm-loop` — [maxthelion/pm-loop](https://github.com/maxthelion/pm-loop)
+- `--kind shoe-makers` — `~/dev/shoe-makers/bundle/` inside [maxthelion/shoe-makers](https://github.com/maxthelion/shoe-makers)
+
+Add or override the registry under `bundles:` in `meta/config.yaml`. You
+can also point at a bundle directly with `--bundle <path>` (overrides
+`--kind`).
 
 | Command | What it does |
 | --- | --- |
-| `install` | Copy the canonical files into a fresh project. Writes `.pm-loop.lock` recording bundle version + source SHA + per-file hashes. Refuses to overwrite pre-existing files unless `--force`. |
+| `install` | Copy the canonical files into a fresh project. Writes `.<bundle-name>.lock` recording bundle version + source SHA + per-file hashes. Refuses to overwrite pre-existing files unless `--force`. |
 | `status` | Compare the bundle, the lockfile, and the project's current files. Reports per file: `in sync`, `UPDATE AVAILABLE`, `LOCAL EDIT`, `CONFLICT`, `MISSING`. Exit code != 0 if any drift. |
 | `update` | Apply bundle changes to files the project hasn't modified (`UPDATE AVAILABLE`). Skips `LOCAL EDIT`, refuses on `CONFLICT` unless `--force`. Bumps the lockfile only for files actually applied. |
 | `diff`   | Print unified diff between target and bundle for any non-in-sync file (optional path filter). |
@@ -114,12 +123,12 @@ store. Actions write into the project repo via project-owned scripts.
 Drift legend:
 - `in sync` — target == lock == bundle.
 - `UPDATE AVAILABLE` — bundle changed since install; target untouched. Safe to update.
-- `LOCAL EDIT` — target changed; bundle unchanged. Project owns this file now; keep `--force` for an intentional reset.
-- `CONFLICT` — both target and bundle have changed. Needs manual merge: use `pm-loop diff <project>`, decide, then `update --force` once you've reconciled.
+- `LOCAL EDIT` — target changed; bundle unchanged. Project owns this file now; pass `--force` for an intentional reset.
+- `CONFLICT` — both target and bundle have changed. Needs manual merge: use `bundle diff <project>`, decide, then `update --force` once you've reconciled.
 - `MISSING` — target file absent. `update` will create it; `install` should run first.
 
-Defaults to looking for the bundle at `~/dev/pm-loop`; pass `--bundle <path>`
-to override.
+The `bun run pm-loop ...` script is kept as an alias for back-compat; it
+just calls the same CLI with the default `--kind pm-loop`.
 
 ## Status
 

@@ -6,10 +6,11 @@
   "scripts": {
     "start": "bun run src/server.ts",
     "dev": "bun --watch run src/server.ts",
-    "pm-loop": "bun run src/cli/pm-loop.ts"
+    "bundle": "bun run src/cli/bundle.ts",
+    "pm-loop": "bun run src/cli/bundle.ts"
   },
   "bin": {
-    "meta-pm-loop": "src/cli/pm-loop.ts"
+    "meta-bundle": "src/cli/bundle.ts"
   },
   "dependencies": {
     "gray-matter": "^4.0.3",

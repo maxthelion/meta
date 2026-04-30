@@ -3,6 +3,12 @@
 # Without a manifest, plugins are auto-detected by convention.
 port: 7777
 dev-root: /Users/maxwilliams/dev
+
+# Bundle registry for the `meta bundle` CLI. Each entry maps a --kind name
+# to a bundle directory (one containing manifest.yaml).
+bundles:
+  pm-loop: /Users/maxwilliams/dev/pm-loop
+  shoe-makers: /Users/maxwilliams/dev/shoe-makers/bundle
 projects:
   - name: in-sequence
     path: /Users/maxwilliams/dev/in-sequence
