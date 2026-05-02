@@ -169,6 +169,61 @@ tr.ready-row td { background: #f1f9f3; }
 .triage-overview-list { padding-left: 24px; margin-top: 8px; }
 .triage-overview-list li.current { font-weight: 700; }
 .triage-overview-list li.current a { color: var(--text); }
+
+.feature-hero { padding: 20px 24px; margin-bottom: 16px; border: 1px solid var(--border); background: var(--panel); }
+.feature-hero h1 { font-size: 28px; margin: 4px 0 12px; }
+.feature-hero .hero-meta { display: flex; gap: 12px; align-items: center; font-size: 13px; }
+.feature-hero .hero-action { display: flex; gap: 16px; align-items: center; padding: 14px 16px; background: #f6f8fc; border: 1px solid #cdd9f0; }
+.feature-hero.hero-role-user .hero-action { background: #fff8ec; border-color: #d8c98a; }
+.feature-hero.hero-role-pm-assistant .hero-action { background: #f1f9f3; border-color: #b8dcc4; }
+.feature-hero.hero-role-build .hero-action { background: #eef4ff; border-color: #b9cdf2; }
+.feature-hero.hero-role-done .hero-action { background: var(--stub); border-color: var(--border); }
+.hero-action-text { flex: 1; }
+.hero-verb { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.hero-role-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; border: 1px solid currentColor; opacity: 0.7; }
+.hero-action p { font-size: 14px; color: var(--text); margin: 0; }
+.hero-cta { display: inline-block; padding: 10px 18px; background: var(--accent); color: white; font-weight: 600; border: 1px solid var(--accent); white-space: nowrap; }
+.hero-cta:hover { opacity: 0.9; text-decoration: none; }
+.hero-cta-passive { background: var(--stub); color: var(--muted); border-color: var(--border); }
+
+.pipeline-strip { display: flex; align-items: stretch; gap: 4px; margin-bottom: 24px; padding: 0; }
+.pipe-phase { flex: 1; padding: 10px 12px; border: 1px solid var(--border); background: var(--panel); text-align: center; }
+.pipe-phase.phase-done { background: #f1f9f3; border-color: var(--ok); }
+.pipe-phase.phase-active { background: #fff8ec; border-color: #d8c98a; }
+.pipe-phase.phase-pending { color: var(--muted); }
+.pipe-phase-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; margin-bottom: 6px; color: var(--muted); }
+.pipe-phase.phase-done .pipe-phase-label { color: var(--ok); }
+.pipe-phase.phase-active .pipe-phase-label { color: var(--attention); }
+.pipe-dots { font-size: 18px; line-height: 1; letter-spacing: 4px; }
+.pipe-dot.pipe-done { color: var(--ok); }
+.pipe-dot.pipe-in-progress { color: var(--attention); }
+.pipe-dot.pipe-missing { color: var(--border); }
+.pipe-dot.pipe-needs-rework { color: var(--attention); }
+.pipe-arrow { display: flex; align-items: center; color: var(--muted); padding: 0 2px; font-size: 18px; }
+
+.artefact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.artefact-phase { padding: 12px; border: 1px solid var(--border); background: #fbfbfb; }
+.artefact-phase h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 8px; }
+.artefact-list { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.artefact-list li { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); }
+.artefact-list li:first-child { border-top: 0; }
+.artefact-status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.art-done { color: var(--ok); }
+.art-in-progress { color: var(--attention); }
+.art-missing { color: var(--border); }
+.art-needs-rework { color: var(--attention); }
+.artefact-name { color: var(--text); flex: 1; margin-left: 6px; }
+.artefact-link { font-size: 12px; }
+.artefact-sub { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.artefact-sub h4 { margin-bottom: 4px; }
+.artefact-sub ul { font-size: 12px; padding-left: 16px; }
+
+.capture-form-details { margin-top: 16px; }
+.capture-form-details > summary { cursor: pointer; padding: 6px 10px; border: 1px dashed var(--border); background: var(--stub); color: var(--muted); font-size: 13px; list-style: none; }
+.capture-form-details > summary::-webkit-details-marker { display: none; }
+.capture-form-details > summary::before { content: "▸ "; }
+.capture-form-details[open] > summary::before { content: "▾ "; }
+.capture-form-details[open] .action-form { margin-top: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td {
   border-bottom: 1px solid var(--border);

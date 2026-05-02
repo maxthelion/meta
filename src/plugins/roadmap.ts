@@ -1081,6 +1081,322 @@ function renderArchitectureDiagramPanel(featureDir: string): string {
     </section>`;
 }
 
+interface PhaseStep {
+  id: string;
+  label: string;
+  status: "done" | "in-progress" | "missing" | "needs-rework";
+  href?: string;
+}
+
+interface Phase {
+  id: string;
+  label: string;
+  steps: PhaseStep[];
+}
+
+interface FeatureNextAction {
+  verb: string;
+  role: "user" | "pm-assistant" | "build" | "done";
+  reason: string;
+  href?: string;
+  ctaLabel: string;
+}
+
+function fileRouteFor(project: Project, absPath: string): string {
+  return `/p/${project.slug}/files/${absPath
+    .slice(project.path.length + 1)
+    .split("/")
+    .map((s) => encodeURIComponent(s))
+    .join("/")}`;
+}
+
+function computePhases(
+  project: Project,
+  dir: string,
+  slug: string,
+  worktree: BuildWorktree | null,
+): Phase[] {
+  const has = (f: string) => existsSync(join(dir, f));
+  const fileLink = (f: string) => `/p/${project.slug}/files/docs/roadmap/${slug}/${f}`;
+
+  const protoFiles = existsSync(join(dir, "prototypes"))
+    ? readdirSync(join(dir, "prototypes")).filter((f) => f.endsWith(".html"))
+    : [];
+
+  const uxNeedsRework = has("ux-review.md") && reviewVerdictNeedsRework(dir, "ux-review.md");
+  const archNeedsRework = has("architecture-review.md") && reviewVerdictNeedsRework(dir, "architecture-review.md");
+
+  function s(id: string, label: string, present: boolean, link?: string, rework = false): PhaseStep {
+    if (rework) return { id, label, status: "needs-rework", href: link };
+    return { id, label, status: present ? "done" : "missing", href: present ? link : undefined };
+  }
+
+  const phases: Phase[] = [
+    {
+      id: "discover",
+      label: "Discover",
+      steps: [
+        s("notes", "notes", has("notes.md"), fileLink("notes.md")),
+        s("stories", "user-stories", has("user-stories.md"), fileLink("user-stories.md")),
+        s("existing", "existing-state", has("existing-state.md"), fileLink("existing-state.md")),
+      ],
+    },
+    {
+      id: "prototype",
+      label: "Prototype",
+      steps: [
+        {
+          id: "protos",
+          label: protoFiles.length > 0 ? `${protoFiles.length} prototype${protoFiles.length === 1 ? "" : "s"}` : "prototypes",
+          status: protoFiles.length > 0 ? "done" : "missing",
+        },
+        s("ux-review", "ux-review", has("ux-review.md"), fileLink("ux-review.md"), uxNeedsRework),
+      ],
+    },
+    {
+      id: "architect",
+      label: "Architect",
+      steps: [
+        s("arch", "architecture", has("architecture.md"), fileLink("architecture.md")),
+        s("arch-review", "review", has("architecture-review.md"), fileLink("architecture-review.md"), archNeedsRework),
+      ],
+    },
+    {
+      id: "specify",
+      label: "Specify",
+      steps: [
+        s("spec", "spec", has("spec.md"), fileLink("spec.md")),
+        s("plan", "plan", has("plan.md"), fileLink("plan.md")),
+        s("handoff", "handoff", has("implementation-handoff.md"), fileLink("implementation-handoff.md")),
+      ],
+    },
+    {
+      id: "build",
+      label: "Build",
+      steps: worktree
+        ? [
+            { id: "promoted", label: "promoted", status: "done" },
+            {
+              id: "tests",
+              label: "tests",
+              status:
+                worktree.lastReviewSha === worktree.headSha && worktree.headSha !== ""
+                  ? "done"
+                  : worktree.testsFailurePresent
+                    ? "needs-rework"
+                    : "in-progress",
+            },
+            {
+              id: "review",
+              label: "reviewed",
+              status:
+                worktree.lastReviewSha === worktree.headSha && worktree.headSha !== ""
+                  ? "done"
+                  : "in-progress",
+            },
+          ]
+        : [{ id: "promoted", label: "promote", status: "missing" }],
+    },
+    {
+      id: "ready",
+      label: "Ready",
+      steps: [
+        {
+          id: "ready",
+          label: worktree?.isReady ? "ready to merge" : "blocked",
+          status: worktree?.isReady ? "done" : "missing",
+        },
+      ],
+    },
+  ];
+
+  return phases;
+}
+
+function nextActionForFeature(
+  project: Project,
+  item: FeatureItem,
+  worktree: BuildWorktree | null,
+): FeatureNextAction {
+  const dir = item.dir;
+  const has = (f: string) => existsSync(join(dir, f));
+  const reviewBase = `/p/${project.slug}/roadmap/${item.slug}`;
+
+  if (item.status === "deferred") {
+    return { verb: "deferred", role: "done", reason: "Status: deferred. No action until reactivated.", ctaLabel: "Reactivate manually" };
+  }
+
+  if (concernsOpen(dir)) {
+    return { verb: "review-concerns", role: "user", reason: "concerns.md is open. Decide acceptance.", href: `${reviewBase}#concerns`, ctaLabel: "Review concerns" };
+  }
+
+  if (item.status === "blocked" || has("open-questions.md")) {
+    return {
+      verb: "answer-open-questions",
+      role: "user",
+      reason: has("open-questions.md") ? "open-questions.md awaits your answer." : "Status: blocked.",
+      href: has("open-questions.md") ? `/p/${project.slug}/files/docs/roadmap/${item.slug}/open-questions.md` : undefined,
+      ctaLabel: "Open questions",
+    };
+  }
+
+  if (!has("notes.md")) {
+    return { verb: "clarify-feature", role: "user", reason: "No notes.md yet. Capture a clarification.", ctaLabel: "Capture clarification" };
+  }
+  if (!has("user-stories.md")) {
+    return { verb: "draft-user-stories", role: "pm-assistant", reason: "PM-assistant will draft user-stories.md on next heartbeat.", ctaLabel: "Waiting on PM agent" };
+  }
+  if (!has("existing-state.md")) {
+    return { verb: "inspect-existing-state", role: "pm-assistant", reason: "PM-assistant will inspect existing implementation.", ctaLabel: "Waiting on PM agent" };
+  }
+
+  const protoDir = join(dir, "prototypes");
+  const protoFiles = existsSync(protoDir) ? readdirSync(protoDir).filter((f) => f.endsWith(".html")).sort() : [];
+
+  if (protoFiles.length === 0) {
+    return { verb: "build-prototypes", role: "pm-assistant", reason: "PM-assistant will build Balsamiq-style prototypes.", ctaLabel: "Waiting on PM agent" };
+  }
+
+  if (!has("ux-review.md") || reviewVerdictNeedsRework(dir, "ux-review.md")) {
+    const first = protoFiles[0]!;
+    return {
+      verb: "review-prototypes",
+      role: "user",
+      reason: has("ux-review.md") ? "ux-review.md verdict requested rework." : `${protoFiles.length} prototype${protoFiles.length === 1 ? "" : "s"} waiting for UX review.`,
+      href: `${reviewBase}/review-prototypes/${encodeURIComponent(first)}`,
+      ctaLabel: "Review prototypes →",
+    };
+  }
+
+  if (!has("architecture.md")) {
+    return { verb: "write-architecture", role: "pm-assistant", reason: "PM-assistant will write architecture guardrails.", ctaLabel: "Waiting on PM agent" };
+  }
+  if (!has("architecture-review.md") || reviewVerdictNeedsRework(dir, "architecture-review.md")) {
+    return {
+      verb: "review-architecture",
+      role: "user",
+      reason: has("architecture-review.md") ? "architecture-review.md verdict requested rework." : "architecture.md is written; needs your review before spec.",
+      href: `/p/${project.slug}/files/docs/roadmap/${item.slug}/architecture.md`,
+      ctaLabel: "Review architecture →",
+    };
+  }
+  if (!has("spec.md")) return { verb: "write-spec", role: "pm-assistant", reason: "PM-assistant will write the spec.", ctaLabel: "Waiting on PM agent" };
+  if (!has("plan.md")) return { verb: "write-plan", role: "pm-assistant", reason: "PM-assistant will write the plan.", ctaLabel: "Waiting on PM agent" };
+  if (!has("implementation-handoff.md")) return { verb: "write-implementation-handoff", role: "pm-assistant", reason: "PM-assistant will write the build handoff.", ctaLabel: "Waiting on PM agent" };
+
+  if (!worktree) {
+    return { verb: "promote", role: "user", reason: "All PM artifacts complete. Promote to a build worktree.", ctaLabel: "Promote to build →" };
+  }
+
+  if (worktree.isReady) {
+    return {
+      verb: "merge-ready",
+      role: "user",
+      reason: `Worktree ${worktree.name} is fully reviewed and ready. Diff ${worktree.mergeBase ? `${worktree.mergeBase.slice(0, 7)}..${worktree.headSha.slice(0, 7)}` : "vs main"}.`,
+      href: fileUrl(worktree.path),
+      ctaLabel: "Open worktree to merge →",
+    };
+  }
+
+  const blockers = worktree.readyBlockers;
+  return {
+    verb: "build-in-progress",
+    role: "build",
+    reason: blockers.length > 0 ? `Build loop in progress: ${blockers.join("; ")}` : "Build loop in progress.",
+    ctaLabel: "Watch build worktree",
+    href: fileUrl(worktree.path),
+  };
+}
+
+const PHASE_STEP_ICON: Record<PhaseStep["status"], string> = {
+  done: "●",
+  "in-progress": "◐",
+  missing: "○",
+  "needs-rework": "⚠",
+};
+
+function renderPipelineStrip(phases: Phase[]): string {
+  const cells = phases
+    .map((phase) => {
+      const dots = phase.steps
+        .map((step) => `<span class="pipe-dot pipe-${step.status}" title="${escape(step.label)}: ${escape(step.status)}">${PHASE_STEP_ICON[step.status]}</span>`)
+        .join(" ");
+      const hasDone = phase.steps.some((s) => s.status === "done");
+      const allDone = phase.steps.every((s) => s.status === "done");
+      const phaseClass = allDone ? "phase-done" : hasDone ? "phase-active" : "phase-pending";
+      return `
+        <div class="pipe-phase ${phaseClass}">
+          <div class="pipe-phase-label">${escape(phase.label)}</div>
+          <div class="pipe-dots">${dots}</div>
+        </div>`;
+    })
+    .join('<div class="pipe-arrow">›</div>');
+  return `<div class="pipeline-strip">${cells}</div>`;
+}
+
+function renderHeroBlock(item: FeatureItem, action: FeatureNextAction): string {
+  const roleClass = `hero-role-${action.role}`;
+  const ctaHref = action.href ?? "";
+  const cta = ctaHref
+    ? `<a class="hero-cta" href="${escape(ctaHref)}">${escape(action.ctaLabel)}</a>`
+    : `<span class="hero-cta hero-cta-passive">${escape(action.ctaLabel)}</span>`;
+
+  return `
+    <section class="feature-hero ${roleClass}">
+      <div class="hero-meta">
+        <span class="badge ${item.status === "blocked" ? "attention-badge" : item.status === "deferred" ? "dormant" : "active"}">${escape(item.status)}</span>
+        <span class="muted">item ${escape(item.id)}</span>
+        <span class="muted">stage <code>${escape(item.stage)}</code></span>
+      </div>
+      <h1>${escape(item.title)}</h1>
+      <div class="hero-action">
+        <div class="hero-action-text">
+          <div class="hero-verb">NEXT: <code>${escape(action.verb)}</code> <span class="hero-role-badge">${escape(action.role)}</span></div>
+          <p>${escape(action.reason)}</p>
+        </div>
+        <div class="hero-cta-wrap">${cta}</div>
+      </div>
+    </section>`;
+}
+
+function renderArtefactsByPhase(phases: Phase[], project: Project, dir: string, slug: string): string {
+  const protoFiles = existsSync(join(dir, "prototypes"))
+    ? readdirSync(join(dir, "prototypes")).filter((f) => f.endsWith(".html")).sort()
+    : [];
+
+  function stepRow(step: PhaseStep): string {
+    const label = `<span class="artefact-status art-${step.status}">${PHASE_STEP_ICON[step.status]}</span> <span class="artefact-name">${escape(step.label)}</span>`;
+    const link = step.href
+      ? `<a href="${escape(step.href)}">open</a>`
+      : `<span class="muted">${escape(step.status)}</span>`;
+    return `<li>${label}<span class="artefact-link">${link}</span></li>`;
+  }
+
+  const sections = phases.map((phase) => {
+    let body = `<ul class="artefact-list">${phase.steps.map(stepRow).join("")}</ul>`;
+    if (phase.id === "prototype" && protoFiles.length > 0) {
+      const protoLinks = protoFiles
+        .map(
+          (f) =>
+            `<li><a href="/p/${escape(project.slug)}/roadmap/${escape(slug)}/review-prototypes/${escape(encodeURIComponent(f))}">${escape(f.replace(/\.html$/, ""))}</a></li>`,
+        )
+        .join("");
+      body += `<div class="artefact-sub"><h4>Prototypes</h4><ul>${protoLinks}</ul></div>`;
+    }
+    return `
+      <div class="artefact-phase">
+        <h3>${escape(phase.label)}</h3>
+        ${body}
+      </div>`;
+  }).join("");
+
+  return `
+    <section class="panel wide">
+      <h2>Artefacts</h2>
+      <div class="artefact-grid">${sections}</div>
+    </section>`;
+}
+
 export function renderFeaturePage(project: Project, slug: string): string | null {
   const paths = roadmapPaths(project);
   if (!paths) return null;
@@ -1088,104 +1404,23 @@ export function renderFeaturePage(project: Project, slug: string): string | null
   if (!existsSync(dir)) return null;
   const readme = join(dir, "README.md");
   const fm = readFrontmatter(readme);
-  const title = (fm?.data.title as string) ?? slug;
+  if (!fm) return null;
 
-  const artefactRows = ARTIFACT_FILES.map((f) => {
-    const present = existsSync(join(dir, f));
-    return `
-      <tr>
-        <td><code>${escape(f)}</code></td>
-        <td>${present ? `<a href="${escape(fileUrl(join(dir, f)))}">open</a>` : `<span class="muted">missing</span>`}</td>
-      </tr>`;
-  }).join("");
+  const allItems = readFeatures(paths.root);
+  const item = allItems.find((it) => it.slug === slug);
+  if (!item) return null;
 
-  const protoDir = join(dir, "prototypes");
-  const protoFiles = existsSync(protoDir)
-    ? readdirSync(protoDir).filter((f) => f.endsWith(".html")).sort()
-    : [];
-  const hasUxReview = existsSync(join(dir, "ux-review.md"));
-  const hasArchitecture = existsSync(join(dir, "architecture.md"));
-  const hasArchReview = existsSync(join(dir, "architecture-review.md"));
+  const allWorktrees = listBuildWorktrees(project, allItems);
+  const worktree = allWorktrees.find((wt) => wt.featureSlug === slug) ?? null;
+
+  const phases = computePhases(project, dir, slug, worktree);
+  const action = nextActionForFeature(project, item, worktree);
+
   const captureFeedbackScript = paths.scripts.captureFeedback;
+  const itemId = String(fm.data.id);
 
-  function relPath(absPath: string): string {
-    return absPath.slice(project.path.length + 1);
-  }
-
-  function fileRoute(absPath: string): string {
-    return `/p/${project.slug}/files/${relPath(absPath)
-      .split("/")
-      .map((s) => encodeURIComponent(s))
-      .join("/")}`;
-  }
-
-  function reviewForm(appliesTo: string, label: string): string {
-    if (!captureFeedbackScript || fm?.data.id === undefined) return "";
-    return `
-      <form class="action-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback">
-        <h3>${escape(label)}</h3>
-        <input type="hidden" name="item-id" value="${escape(String(fm.data.id))}">
-        <input type="hidden" name="applies-to" value="${escape(appliesTo)}">
-        <label>Feedback (applies to <code>${escape(appliesTo)}</code>)</label>
-        <textarea name="text" required placeholder="What works, what fails, which direction to keep, what needs another pass."></textarea>
-        <button type="submit">Capture Feedback</button>
-      </form>`;
-  }
-
-  let activeReview = "";
-
-  if (protoFiles.length > 0 && !hasUxReview) {
-    const links = protoFiles
-      .map(
-        (f) =>
-          `<li><a href="/p/${escape(project.slug)}/roadmap/${escape(slug)}/review-prototypes/${escape(encodeURIComponent(f))}">${escape(f.replace(/\.html$/, ""))}</a></li>`,
-      )
-      .join("");
-    activeReview = `
-      <section class="panel review-panel">
-        <h2>Review: Prototypes</h2>
-        <p class="muted">Evaluate against the UX checklist; capture review writes to <code>feedback/</code> with <code>applies_to: prototypes</code>.</p>
-        <ul class="action-links">${links}</ul>
-      </section>`;
-  } else if (hasArchitecture && !hasArchReview) {
-    const archPath = join(dir, "architecture.md");
-    activeReview = `
-      <section class="panel wide review-panel">
-        <h2>Review: Architecture</h2>
-        <p class="muted">Review the proposed data/runtime shape, pipeline/data-flow, component boundaries, what is transient vs persisted, guardrails, and unresolved questions.</p>
-        <div class="review-grid">
-          <div class="review-frames">
-            <div class="prototype-frame">
-              <div class="prototype-frame-head">
-                <strong>architecture.md</strong>
-                <a href="${escape(fileRoute(archPath))}" target="_blank">open in new tab</a>
-              </div>
-              <iframe src="${escape(fileRoute(archPath))}" loading="lazy"></iframe>
-            </div>
-          </div>
-          <div class="review-form">${reviewForm("architecture", "Capture Architecture Review")}</div>
-        </div>
-      </section>`;
-  }
-
-  let prototypes = "";
-  if (protoFiles.length > 0) {
-    prototypes = `
-      <section class="panel">
-        <h2>Prototypes</h2>
-        <ul>
-          ${protoFiles
-            .map(
-              (f) =>
-                `<li><a href="${escape(fileRoute(join(protoDir, f)))}" target="_blank">${escape(f)}</a> · <a class="muted" href="${escape(fileUrl(join(protoDir, f)))}">file://</a></li>`,
-            )
-            .join("")}
-        </ul>
-      </section>`;
-  }
-
-  let feedback = "";
   const fbDir = join(dir, "feedback");
+  let feedbackPanel = "";
   if (existsSync(fbDir)) {
     const files = readdirSync(fbDir).filter((f) => f.endsWith(".md")).sort();
     if (files.length > 0) {
@@ -1203,9 +1438,14 @@ export function renderFeaturePage(project: Project, slug: string): string | null
             </tr>`;
         })
         .join("");
-      feedback = `
+      const open = files.filter((f) => {
+        const fm2 = readFrontmatter(join(fbDir, f));
+        const status = (fm2?.data.status as string) ?? "new";
+        return status !== "handled" && status !== "archived";
+      }).length;
+      feedbackPanel = `
         <section class="panel">
-          <h2>Feedback Queue</h2>
+          <h2>Feedback ${open > 0 ? `<span class="badge attention-badge">${open} open</span>` : ""}</h2>
           <table>
             <thead><tr><th>File</th><th>Applies to</th><th>Status</th></tr></thead>
             <tbody>${rows}</tbody>
@@ -1214,55 +1454,44 @@ export function renderFeaturePage(project: Project, slug: string): string | null
     }
   }
 
-  let actions = "";
-  if (captureFeedbackScript && fm?.data.id !== undefined) {
-    actions = `
-      <form class="action-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback">
-        <h3>Add Feedback For This Feature</h3>
-        <input type="hidden" name="item-id" value="${escape(String(fm.data.id))}">
-        <label>Applies to</label>
-        <select name="applies-to" required>
-          <option value="general">general</option>
-          <option value="prototypes">prototypes</option>
-          <option value="architecture">architecture</option>
-          <option value="spec">spec</option>
-          <option value="plan">plan</option>
-        </select>
-        <label>Raw feedback</label>
-        <textarea name="text" required placeholder="Review comment"></textarea>
-        <button type="submit">Capture Feedback</button>
-      </form>`;
-  }
-
-  const front = fm
-    ? Object.entries(fm.data)
-        .map(([k, v]) => `<tr><td><strong>${escape(k)}</strong></td><td><code>${escape(JSON.stringify(v))}</code></td></tr>`)
-        .join("")
+  const captureForm = captureFeedbackScript
+    ? `
+      <details class="capture-form-details">
+        <summary>Capture feedback on this feature</summary>
+        <form class="action-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback">
+          <input type="hidden" name="item-id" value="${escape(itemId)}">
+          <label>Applies to</label>
+          <select name="applies-to" required>
+            <option value="general">general</option>
+            <option value="prototypes">prototypes</option>
+            <option value="architecture">architecture</option>
+            <option value="spec">spec</option>
+            <option value="plan">plan</option>
+          </select>
+          <label>Raw feedback</label>
+          <textarea name="text" required placeholder="What works, what fails, what to flag for the PM agent."></textarea>
+          <button type="submit">Capture</button>
+        </form>
+      </details>`
     : "";
 
+  const frontmatterTable = Object.entries(fm.data)
+    .map(([k, v]) => `<tr><td><strong>${escape(k)}</strong></td><td><code>${escape(JSON.stringify(v))}</code></td></tr>`)
+    .join("");
+
   return `
-    <h1>${escape(title)}</h1>
-    <p class="muted"><a href="${escape(fileUrl(dir))}">${escape(dir)}</a></p>
+    ${renderHeroBlock(item, action)}
+    ${renderPipelineStrip(phases)}
+    ${renderArtefactsByPhase(phases, project, dir, slug)}
+    ${existsSync(join(dir, "architecture.md")) ? renderArchitectureDiagramPanel(dir) : ""}
+    ${feedbackPanel}
+    ${captureForm}
 
-    <section class="panel">
-      <h2>Status</h2>
-      <table><tbody>${front}</tbody></table>
-    </section>
-
-    ${activeReview}
-    ${hasArchitecture ? renderArchitectureDiagramPanel(dir) : ""}
-
-    <section class="panel">
-      <h2>Artefact Inventory</h2>
-      <table>
-        <thead><tr><th>Artefact</th><th></th></tr></thead>
-        <tbody>${artefactRows}</tbody>
-      </table>
-    </section>
-
-    ${prototypes}
-    ${feedback}
-    ${actions}`;
+    <details class="reference-details">
+      <summary>Reference (frontmatter, file path)</summary>
+      <p class="muted"><a href="${escape(fileUrl(dir))}">${escape(dir)}</a></p>
+      <table><tbody>${frontmatterTable}</tbody></table>
+    </details>`;
 }
 
 export interface ReviewPrototypesPage {
