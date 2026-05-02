@@ -35,6 +35,7 @@ export async function renderHome(projects: Project[]): Promise<string> {
   const body = `
     <h1>Projects</h1>
     <p class="muted">Central command view of projects under <code>~/dev</code>. Each project keeps its own artefacts; this hub reads and surfaces them.</p>
+    <p><a class="button-link" href="/orchestrator">Open orchestrator</a></p>
     <div class="grid">
       ${cards.join("")}
     </div>`;

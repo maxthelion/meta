@@ -98,6 +98,7 @@ store. Actions write into the project repo via project-owned scripts.
 | `/p/<slug>/roadmap/<feature>/review-prototypes/<file>` | Tabbed prototype review with feedback capture |
 | `/p/<slug>/files/<rel-path>` | Serves project files (used by iframes) |
 | `/p/<slug>/action/<id>` | POST: shells out to project script |
+| `/orchestrator` | Central lease model across PM and promoted build subtrees |
 
 ## bundle CLI
 
@@ -129,6 +130,21 @@ Drift legend:
 
 The `bun run pm-loop ...` script is kept as an alias for back-compat; it
 just calls the same CLI with the default `--kind pm-loop`.
+
+## orchestrator CLI
+
+`bun run orchestrator` renders the central lease model across registered
+projects. It discovers PM-loop work, promoted build worktrees, ready signals,
+and human-attention blockers, then grants a parallel-safe batch of leases using
+cwd, branch, roadmap-item, and shared-resource conflict keys.
+
+Useful modes:
+
+- `bun run orchestrator` — human-readable lease report.
+- `bun run orchestrator -- --json` — machine-readable model for a heartbeat.
+- `bun run orchestrator -- --refresh` — refresh child selectors before reading.
+
+The matching dashboard page is `/orchestrator`.
 
 ## Orchestrator and client
 

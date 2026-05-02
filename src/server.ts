@@ -8,6 +8,8 @@ import { renderProject } from "./render/project.ts";
 import { renderFeature } from "./render/feature.ts";
 import { renderReviewPrototypesPage, buildActionQueue, renderTriageBody } from "./plugins/roadmap.ts";
 import { layout } from "./render/layout.ts";
+import { buildOrchestratorModel } from "./orchestrator/model.ts";
+import { renderOrchestrator } from "./render/orchestrator.ts";
 
 const CONFIG_PATH = resolve(import.meta.dir, "..", "config.yaml");
 const STATIC_DIR = resolve(import.meta.dir, "..", "static");
@@ -84,6 +86,10 @@ const server = Bun.serve({
 
     if (path === "/" && req.method === "GET") {
       return html(await renderHome(projects));
+    }
+
+    if (path === "/orchestrator" && req.method === "GET") {
+      return html(renderOrchestrator(projects, buildOrchestratorModel(projects)));
     }
 
     if (path === "/static/style.css" && req.method === "GET") {
