@@ -8,6 +8,7 @@ import { renderProject } from "./render/project.ts";
 import { renderFeature } from "./render/feature.ts";
 import { renderReviewPrototypesPage, buildActionQueue, renderTriageBody } from "./plugins/roadmap.ts";
 import { layout } from "./render/layout.ts";
+import { resolveRef, renderResolvedRef } from "./util/wikilinks.ts";
 import { buildOrchestratorModel } from "./orchestrator/model.ts";
 import { renderOrchestrator } from "./render/orchestrator.ts";
 
@@ -116,6 +117,29 @@ const server = Bun.serve({
 
       if (rest === "" && req.method === "GET") {
         return html(await renderProject(project, readFlash(req)));
+      }
+
+      if (rest === "ref" && req.method === "GET") {
+        const type = url.searchParams.get("type") ?? "";
+        const id = url.searchParams.get("id") ?? "";
+        const featureSlug = url.searchParams.get("feature") ?? "";
+        if (!type || !id || !featureSlug) {
+          return new Response("missing type/id/feature", { status: 400 });
+        }
+        const resolved = resolveRef(
+          { projectPath: project.path, featureSlug },
+          type,
+          id,
+        );
+        if (!resolved) {
+          return new Response(
+            `<div class="wikilink-popover"><p class="muted">No content found for <code>${type}:${id}</code> in feature <code>${featureSlug}</code>.</p></div>`,
+            { headers: { "Content-Type": "text/html; charset=utf-8" } },
+          );
+        }
+        return new Response(renderResolvedRef(resolved, project.slug, featureSlug), {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
       }
 
       if (rest === "queue" && req.method === "GET") {

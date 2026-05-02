@@ -41,6 +41,32 @@ ${opts.body}
     await mermaid.default.run({ nodes: diagrams });
   }
 </script>
+<script>
+  // Wikilink expansion: click a [[…]] chip to load its referenced fragment
+  // inline; click again or the close button to collapse. Cmd/Ctrl-click
+  // navigates instead (fall back to the href).
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest("a.wikilink");
+    if (!a) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    const next = a.nextElementSibling;
+    if (next && next.classList && next.classList.contains("wikilink-expanded")) {
+      next.remove();
+      a.classList.remove("wikilink-open");
+      return;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "wikilink-expanded";
+    wrap.innerHTML = '<div class="wikilink-loading">Loading…</div>';
+    a.after(wrap);
+    a.classList.add("wikilink-open");
+    fetch(a.href, { headers: { Accept: "text/html" } })
+      .then((r) => r.text())
+      .then((html) => { wrap.innerHTML = html; })
+      .catch((err) => { wrap.innerHTML = '<div class="wikilink-error">Load failed: ' + (err && err.message || err) + '</div>'; });
+  });
+</script>
 </body>
 </html>`;
 }

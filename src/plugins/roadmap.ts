@@ -6,6 +6,7 @@ import { escape, fileUrl } from "../util/html.ts";
 import { readFrontmatter } from "../util/frontmatter.ts";
 import { renderMarkdown } from "../util/markdown.ts";
 import { parseConcerns, parseOpenQuestions } from "../util/atomic-items.ts";
+import { injectWikilinks } from "../util/wikilinks.ts";
 
 interface RoadmapPaths {
   root: string;
@@ -951,14 +952,20 @@ const FRONTMATTER_DISPLAY_KEYS = new Set([
   "status",
 ]);
 
-function artefactBlock(label: string, content: string, openHref: string | null): string {
+function artefactBlock(
+  label: string,
+  content: string,
+  openHref: string | null,
+  context?: { projectSlug: string; featureSlug: string },
+): string {
   if (!content.trim()) return `<p class="muted">${escape(label)} is empty or missing.</p>`;
   const linkHtml = openHref ? `<a href="${escape(openHref)}" target="_blank">open in new tab</a>` : "";
 
   let bodyHtml: string;
   let metaChips = "";
   try {
-    const rendered = renderMarkdown(content);
+    const withLinks = context ? injectWikilinks(content, context) : content;
+    const rendered = renderMarkdown(withLinks);
     bodyHtml = rendered.html;
     const chips: string[] = [];
     for (const [k, v] of Object.entries(rendered.frontmatter)) {
@@ -1017,7 +1024,7 @@ function renderTriageCardBody(
       if (current.subId && current.subBody !== undefined) {
         const label = `Concern ${current.subId}: ${current.subTitle ?? ""}`;
         return `
-          ${artefactBlock(label, current.subBody, `${featureFileBase}/concerns.md`)}
+          ${artefactBlock(label, current.subBody, `${featureFileBase}/concerns.md`, { projectSlug: project.slug, featureSlug: current.featureSlug })}
           <p class="muted">One concern at a time. Decide accepted / open question / non-blocking + reasoning. Captured as feedback with <code>applies_to: concerns</code>; the PM-assistant updates <code>concerns.md</code> on next heartbeat.</p>
           ${captureFeedbackForm(
             project,
@@ -1032,7 +1039,7 @@ function renderTriageCardBody(
       }
       const concerns = readFileSafely(join(dir, "concerns.md"));
       return `
-        ${artefactBlock("concerns.md", concerns, `${featureFileBase}/concerns.md`)}
+        ${artefactBlock("concerns.md", concerns, `${featureFileBase}/concerns.md`, { projectSlug: project.slug, featureSlug: current.featureSlug })}
         ${captureFeedbackForm(project, itemId, "concerns", "Decision", "Accepted / open question / non-blocking + reasoning.", returnTo, "Capture decision")}`;
     }
 
@@ -1040,7 +1047,7 @@ function renderTriageCardBody(
       if (current.subId && current.subBody !== undefined) {
         const label = `Question ${current.subId}: ${current.subTitle ?? ""}`;
         return `
-          ${artefactBlock(label, current.subBody, `${featureFileBase}/open-questions.md`)}
+          ${artefactBlock(label, current.subBody, `${featureFileBase}/open-questions.md`, { projectSlug: project.slug, featureSlug: current.featureSlug })}
           <p class="muted">One question at a time. Captured as feedback with <code>applies_to: open-questions</code>; the PM-assistant incorporates it into the relevant artefact (<code>architecture.md</code>, <code>spec.md</code>, etc.) on next heartbeat.</p>
           ${captureFeedbackForm(
             project,
@@ -1055,7 +1062,7 @@ function renderTriageCardBody(
       }
       const oq = readFileSafely(join(dir, "open-questions.md"));
       return `
-        ${artefactBlock("open-questions.md", oq, `${featureFileBase}/open-questions.md`)}
+        ${artefactBlock("open-questions.md", oq, `${featureFileBase}/open-questions.md`, { projectSlug: project.slug, featureSlug: current.featureSlug })}
         ${captureFeedbackForm(project, itemId, "open-questions", "Your answer", "Yes/no/option choice + reasoning.", returnTo, "Capture answer")}`;
     }
 
@@ -1086,7 +1093,7 @@ function renderTriageCardBody(
     case "review-architecture": {
       const arch = readFileSafely(join(dir, "architecture.md"));
       return `
-        ${artefactBlock("architecture.md", arch, `${featureFileBase}/architecture.md`)}
+        ${artefactBlock("architecture.md", arch, `${featureFileBase}/architecture.md`, { projectSlug: project.slug, featureSlug: current.featureSlug })}
         <p class="muted">Captured as feedback with <code>applies_to: architecture</code>. PM-assistant will produce <code>architecture-review.md</code> with a verdict.</p>
         ${captureFeedbackForm(project, itemId, "architecture", "Capture architecture review", "Approved guardrails, rejected/revised guardrails, open architecture questions, whether the feature may advance to spec.", returnTo, "Capture review")}`;
     }
@@ -1107,7 +1114,7 @@ function renderTriageCardBody(
     case "ready-to-promote": {
       const handoff = readFileSafely(join(dir, "implementation-handoff.md"));
       return `
-        ${artefactBlock("implementation-handoff.md", handoff, `${featureFileBase}/implementation-handoff.md`)}
+        ${artefactBlock("implementation-handoff.md", handoff, `${featureFileBase}/implementation-handoff.md`, { projectSlug: project.slug, featureSlug: current.featureSlug })}
         <p class="muted">Promotion creates <code>.worktrees/roadmap-${escape(itemId)}-${escape(current.featureSlug)}/</code>, an <code>auto/roadmap-…</code> branch, and writes a normalised build plan into the worktree. The implementation BT runs from the worktree, not the main checkout.</p>
         <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/promote-ready-item?return=${encodeURIComponent(returnTo)}">
           <input type="hidden" name="item-id" value="${escape(itemId)}">
@@ -1121,7 +1128,7 @@ function renderTriageCardBody(
       const wtName = `roadmap-${itemId}-${current.featureSlug}`;
       const readyForUser = readFileSafely(join(project.path, ".worktrees", wtName, ".claude", "state", "ready-for-user.md"));
       return `
-        ${readyForUser ? artefactBlock("ready-for-user.md", readyForUser, null) : `<p class="muted">No <code>ready-for-user.md</code> in the worktree yet — meta computed READY from the same gates that build-loop's <code>signal-ready</code> uses.</p>`}
+        ${readyForUser ? artefactBlock("ready-for-user.md", readyForUser, null, { projectSlug: project.slug, featureSlug: current.featureSlug }) : `<p class="muted">No <code>ready-for-user.md</code> in the worktree yet — meta computed READY from the same gates that build-loop's <code>signal-ready</code> uses.</p>`}
         <p>Worktree: <a href="${escape(fileUrl(join(project.path, ".worktrees", wtName)))}">${escape(wtName)}</a></p>
         <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/open-build?return=${encodeURIComponent(returnTo)}">
           <input type="hidden" name="worktree" value="${escape(wtName)}">

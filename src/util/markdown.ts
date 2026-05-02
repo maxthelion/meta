@@ -1,7 +1,9 @@
 import MarkdownIt from "markdown-it";
 import matter from "gray-matter";
 
-const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
+// html:true so the wikilink anchor tokens (injected into the source before
+// rendering) survive markdown-it's pass instead of being escaped.
+const md = new MarkdownIt({ html: true, linkify: true, typographer: false });
 
 export interface RenderedMarkdown {
   html: string;
