@@ -170,6 +170,21 @@ tr.ready-row td { background: #f1f9f3; }
 .triage-overview-list li.current { font-weight: 700; }
 .triage-overview-list li.current a { color: var(--text); }
 
+.triage-feature-link { margin-left: auto; }
+.triage-context { font-size: 14px; margin-bottom: 16px; color: var(--muted); }
+.triage-artefact { margin-bottom: 16px; border: 1px solid var(--border); background: white; }
+.triage-artefact-head { display: flex; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--stub); font-size: 13px; }
+.triage-artefact-body { padding: 12px; margin: 0; max-height: 460px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+.triage-form { margin-top: 12px; padding: 14px; border: 1px solid var(--border); background: #fbfbfb; }
+.triage-form label { display: block; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+.triage-form textarea { width: 100%; min-height: 140px; padding: 8px; border: 1px solid var(--border); font-family: inherit; font-size: 14px; }
+.triage-form-actions { margin-top: 10px; display: flex; gap: 12px; align-items: center; }
+.triage-form button { padding: 8px 18px; background: var(--accent); color: white; font-weight: 600; border: 1px solid var(--accent); cursor: pointer; }
+.triage-form button:hover { opacity: 0.9; }
+.triage-form-actions::after { content: "⌘+Enter to submit"; color: var(--muted); font-size: 12px; }
+.triage-prototypes { margin-bottom: 12px; }
+.triage-iframe { width: 100%; height: 600px; border: 1px solid var(--border); display: block; }
+
 .feature-hero { padding: 20px 24px; margin-bottom: 16px; border: 1px solid var(--border); background: var(--panel); }
 .feature-hero h1 { font-size: 28px; margin: 4px 0 12px; }
 .feature-hero .hero-meta { display: flex; gap: 12px; align-items: center; font-size: 13px; }

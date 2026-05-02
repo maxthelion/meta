@@ -876,6 +876,155 @@ export function buildActionQueue(project: Project): QueueItem[] {
   return computeActionQueue(project, items, worktrees);
 }
 
+function findFeatureDir(project: Project, slug: string): string | null {
+  const paths = roadmapPaths(project);
+  if (!paths) return null;
+  const dir = join(paths.root, slug);
+  return existsSync(dir) ? dir : null;
+}
+
+function readFileSafely(path: string): string {
+  if (!existsSync(path)) return "";
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function artefactBlock(label: string, content: string, openHref: string | null): string {
+  if (!content.trim()) return `<p class="muted">${escape(label)} is empty or missing.</p>`;
+  const linkHtml = openHref ? ` <a href="${escape(openHref)}" target="_blank">open in new tab</a>` : "";
+  return `
+    <div class="triage-artefact">
+      <div class="triage-artefact-head"><strong>${escape(label)}</strong>${linkHtml}</div>
+      <pre class="triage-artefact-body">${escape(content)}</pre>
+    </div>`;
+}
+
+function captureFeedbackForm(
+  project: Project,
+  itemId: string,
+  appliesTo: string,
+  label: string,
+  placeholder: string,
+  returnTo: string,
+  buttonLabel: string,
+): string {
+  return `
+    <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback?return=${encodeURIComponent(returnTo)}">
+      <input type="hidden" name="item-id" value="${escape(itemId)}">
+      <input type="hidden" name="applies-to" value="${escape(appliesTo)}">
+      <label>${escape(label)}</label>
+      <textarea name="text" required placeholder="${escape(placeholder)}" autofocus></textarea>
+      <div class="triage-form-actions">
+        <button type="submit">${escape(buttonLabel)}</button>
+      </div>
+    </form>`;
+}
+
+function renderTriageCardBody(
+  project: Project,
+  current: QueueItem,
+  returnTo: string,
+): string {
+  const dir = findFeatureDir(project, current.featureSlug);
+  if (!dir) return `<p class="attention">Feature directory not found.</p>`;
+  const featureFileBase = `/p/${project.slug}/files/docs/roadmap/${current.featureSlug}`;
+  const itemId = current.featureId;
+
+  switch (current.kind) {
+    case "review-concerns": {
+      const concerns = readFileSafely(join(dir, "concerns.md"));
+      return `
+        ${artefactBlock("concerns.md", concerns, `${featureFileBase}/concerns.md`)}
+        <p class="muted">Capture your decision below. The PM-assistant will pick this up via <code>address-feedback</code> and update <code>concerns.md</code> accordingly.</p>
+        ${captureFeedbackForm(project, itemId, "concerns", "Decision per concern (accepted / open question / non-blocking + reasoning)", "1. Accept (with constraint X). 2. Open question — needs user input on Y. 3. Non-blocking; address in follow-up.", returnTo, "Capture decision")}`;
+    }
+
+    case "answer-open-questions": {
+      const oq = readFileSafely(join(dir, "open-questions.md"));
+      return `
+        ${artefactBlock("open-questions.md", oq, `${featureFileBase}/open-questions.md`)}
+        <p class="muted">Captured as feedback with <code>applies_to: open-questions</code>. The PM-assistant will incorporate it on next heartbeat.</p>
+        ${captureFeedbackForm(project, itemId, "open-questions", "Your answer", "1. Yes, do X because... 2. No, prefer Y. 3. We need more data — try a small experiment.", returnTo, "Capture answer")}`;
+    }
+
+    case "review-prototypes": {
+      const protoDir = join(dir, "prototypes");
+      const protoFiles = existsSync(protoDir)
+        ? readdirSync(protoDir).filter((f) => f.endsWith(".html")).sort()
+        : [];
+      const tabs = protoFiles
+        .map(
+          (f, idx) =>
+            `<a class="${idx === 0 ? "tab active" : "tab"}" href="/p/${escape(project.slug)}/roadmap/${escape(current.featureSlug)}/review-prototypes/${escape(encodeURIComponent(f))}">${escape(f.replace(/\.html$/, ""))}</a>`,
+        )
+        .join("");
+      const first = protoFiles[0];
+      const iframe = first
+        ? `<iframe class="triage-iframe" src="/p/${escape(project.slug)}/files/docs/roadmap/${escape(current.featureSlug)}/prototypes/${escape(encodeURIComponent(first))}" loading="lazy"></iframe>`
+        : `<p class="muted">No prototype HTML files found.</p>`;
+      return `
+        <div class="triage-prototypes">
+          <div class="tabs">${tabs}</div>
+          ${iframe}
+        </div>
+        ${captureFeedbackForm(project, itemId, "prototypes", "Capture prototype review", "Goal clarity, progressive disclosure, information hierarchy, state legibility, action locality, reversibility, empty/error states. What works, what fails, which direction to keep.", returnTo, "Capture review")}
+        <p class="muted"><a href="/p/${escape(project.slug)}/roadmap/${escape(current.featureSlug)}/review-prototypes/${escape(encodeURIComponent(first ?? ""))}">Switch to dedicated review page (more space)</a></p>`;
+    }
+
+    case "review-architecture": {
+      const arch = readFileSafely(join(dir, "architecture.md"));
+      return `
+        ${artefactBlock("architecture.md", arch, `${featureFileBase}/architecture.md`)}
+        <p class="muted">Captured as feedback with <code>applies_to: architecture</code>. PM-assistant will produce <code>architecture-review.md</code> with a verdict.</p>
+        ${captureFeedbackForm(project, itemId, "architecture", "Capture architecture review", "Approved guardrails, rejected/revised guardrails, open architecture questions, whether the feature may advance to spec.", returnTo, "Capture review")}`;
+    }
+
+    case "clarify-feature": {
+      return `
+        <p class="muted">No <code>notes.md</code> yet. Capture a brief clarification: what feels broken, what users are trying to achieve, what the model already gets right, and any constraints or examples.</p>
+        <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/capture-clarification?return=${encodeURIComponent(returnTo)}">
+          <input type="hidden" name="item-id" value="${escape(itemId)}">
+          <label>Raw clarification</label>
+          <textarea name="text" required placeholder="Describe the feature in your own words." autofocus></textarea>
+          <div class="triage-form-actions">
+            <button type="submit">Capture clarification</button>
+          </div>
+        </form>`;
+    }
+
+    case "ready-to-promote": {
+      const handoff = readFileSafely(join(dir, "implementation-handoff.md"));
+      return `
+        ${artefactBlock("implementation-handoff.md", handoff, `${featureFileBase}/implementation-handoff.md`)}
+        <p class="muted">Promotion creates <code>.worktrees/roadmap-${escape(itemId)}-${escape(current.featureSlug)}/</code>, an <code>auto/roadmap-…</code> branch, and writes a normalised build plan into the worktree. The implementation BT runs from the worktree, not the main checkout.</p>
+        <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/promote-ready-item?return=${encodeURIComponent(returnTo)}">
+          <input type="hidden" name="item-id" value="${escape(itemId)}">
+          <div class="triage-form-actions">
+            <button type="submit">Promote to build worktree</button>
+          </div>
+        </form>`;
+    }
+
+    case "merge-ready": {
+      const wtName = `roadmap-${itemId}-${current.featureSlug}`;
+      const readyForUser = readFileSafely(join(project.path, ".worktrees", wtName, ".claude", "state", "ready-for-user.md"));
+      return `
+        ${readyForUser ? artefactBlock("ready-for-user.md", readyForUser, null) : `<p class="muted">No <code>ready-for-user.md</code> in the worktree yet — meta computed READY from the same gates that build-loop's <code>signal-ready</code> uses.</p>`}
+        <p>Worktree: <a href="${escape(fileUrl(join(project.path, ".worktrees", wtName)))}">${escape(wtName)}</a></p>
+        <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/open-build?return=${encodeURIComponent(returnTo)}">
+          <input type="hidden" name="worktree" value="${escape(wtName)}">
+          <div class="triage-form-actions">
+            <button type="submit">Open build (xcodebuild + open .app)</button>
+          </div>
+        </form>
+        <p class="muted">Merging is a manual step in the main checkout. The triage flow ends here — when you're satisfied, <code>git merge --squash auto/${escape(`roadmap-${itemId}-${current.featureSlug}`)}</code> from <code>main</code>.</p>`;
+    }
+  }
+}
+
 export function renderTriageBody(project: Project, queue: QueueItem[], index: number): string {
   if (queue.length === 0) {
     return `
@@ -890,6 +1039,9 @@ export function renderTriageBody(project: Project, queue: QueueItem[], index: nu
   const current = queue[i]!;
   const prev = i > 0 ? i - 1 : null;
   const next = i < queue.length - 1 ? i + 1 : null;
+  const returnTo = next !== null
+    ? `/p/${project.slug}/queue?i=${next}`
+    : `/p/${project.slug}/queue`;
 
   const list = queue
     .map(
@@ -905,17 +1057,16 @@ export function renderTriageBody(project: Project, queue: QueueItem[], index: nu
       <div class="triage-card-head">
         <span class="queue-kind queue-kind-${escape(current.kind)}">${escape(QUEUE_KIND_LABEL[current.kind])}</span>
         <span class="muted">item ${escape(current.featureId)}</span>
+        <a class="muted triage-feature-link" href="${escape(current.href)}">open feature page →</a>
       </div>
       <h2>${escape(current.featureTitle)}</h2>
-      <p>${escape(current.context)}</p>
-      <div class="triage-actions">
-        <a class="triage-act" href="${escape(current.href)}">Open feature →</a>
-      </div>
+      <p class="triage-context">${escape(current.context)}</p>
+      ${renderTriageCardBody(project, current, returnTo)}
     </div>
 
     <nav class="triage-nav">
       ${prev !== null ? `<a class="triage-prev" href="?i=${prev}" accesskey="p">← Previous (p)</a>` : `<span class="triage-prev muted">— start —</span>`}
-      ${next !== null ? `<a class="triage-next" href="?i=${next}" accesskey="n">Next (n) →</a>` : `<span class="triage-next muted">— end —</span>`}
+      ${next !== null ? `<a class="triage-next" href="?i=${next}" accesskey="n">Skip (n) →</a>` : `<span class="triage-next muted">— end —</span>`}
       <a class="triage-back" href="/p/${escape(project.slug)}">back to ${escape(project.name)}</a>
     </nav>
 
@@ -927,9 +1078,9 @@ export function renderTriageBody(project: Project, queue: QueueItem[], index: nu
     <script>
       document.addEventListener("keydown", (e) => {
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-        if (e.key === "j" || e.key === "ArrowDown") { const a = document.querySelector(".triage-next"); if (a instanceof HTMLAnchorElement) a.click(); }
-        if (e.key === "k" || e.key === "ArrowUp") { const a = document.querySelector(".triage-prev"); if (a instanceof HTMLAnchorElement) a.click(); }
-        if (e.key === "Enter") { const a = document.querySelector(".triage-act"); if (a instanceof HTMLAnchorElement) a.click(); }
+        if ((e.key === "j" || e.key === "ArrowRight") && !e.metaKey && !e.ctrlKey) { const a = document.querySelector(".triage-next"); if (a instanceof HTMLAnchorElement) a.click(); }
+        if ((e.key === "k" || e.key === "ArrowLeft") && !e.metaKey && !e.ctrlKey) { const a = document.querySelector(".triage-prev"); if (a instanceof HTMLAnchorElement) a.click(); }
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { const f = document.querySelector(".triage-form"); if (f instanceof HTMLFormElement) f.requestSubmit(); }
       });
     </script>`;
 }
