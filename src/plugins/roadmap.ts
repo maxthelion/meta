@@ -698,29 +698,290 @@ function renderFeatureTable(project: Project, items: FeatureItem[]): string {
     </section>`;
 }
 
-function renderSummary(project: Project, items: FeatureItem[]): string {
-  const totalPrototypes = items.reduce((s, it) => s + it.prototypeCount, 0);
-  const openFeedback = items.reduce((s, it) => s + it.feedbackOpen, 0);
-  const blocked = items.filter((it) => it.status === "blocked").length;
-  const openQuestions = items.filter((it) => it.hasArtifact["open-questions.md"]).length;
+interface QueueItem {
+  kind:
+    | "merge-ready"
+    | "review-concerns"
+    | "answer-open-questions"
+    | "review-prototypes"
+    | "review-architecture"
+    | "clarify-feature"
+    | "ready-to-promote";
+  priority: number;
+  featureId: string;
+  featureSlug: string;
+  featureTitle: string;
+  context: string;
+  href: string;
+}
+
+const QUEUE_KIND_LABEL: Record<QueueItem["kind"], string> = {
+  "merge-ready": "Merge",
+  "review-concerns": "Review concerns",
+  "answer-open-questions": "Answer open questions",
+  "review-prototypes": "Review prototypes",
+  "review-architecture": "Review architecture",
+  "clarify-feature": "Clarify",
+  "ready-to-promote": "Promote",
+};
+
+const QUEUE_KIND_PRIORITY: Record<QueueItem["kind"], number> = {
+  "merge-ready": 1,
+  "review-concerns": 2,
+  "answer-open-questions": 3,
+  "review-prototypes": 4,
+  "review-architecture": 5,
+  "clarify-feature": 6,
+  "ready-to-promote": 7,
+};
+
+function reviewVerdictNeedsRework(featureDir: string, file: string): boolean {
+  const fm = readFrontmatter(join(featureDir, file));
+  if (!fm) return false;
+  const verdict = (fm.data.verdict as string) ?? "";
+  return verdict === "needs-rework" || verdict === "rejected";
+}
+
+function concernsOpen(featureDir: string): boolean {
+  const fm = readFrontmatter(join(featureDir, "concerns.md"));
+  if (!fm) return false;
+  const status = (fm.data.status as string) ?? "open";
+  return status !== "resolved" && status !== "archived";
+}
+
+function computeActionQueue(
+  project: Project,
+  items: FeatureItem[],
+  worktrees: BuildWorktree[],
+): QueueItem[] {
+  const queue: QueueItem[] = [];
+
+  for (const wt of worktrees) {
+    if (wt.isReady) {
+      queue.push({
+        kind: "merge-ready",
+        priority: QUEUE_KIND_PRIORITY["merge-ready"],
+        featureId: wt.featureId,
+        featureSlug: wt.featureSlug,
+        featureTitle: wt.featureTitle,
+        context: `Worktree ${wt.name} is fully reviewed and ready. ${wt.mergeBase ? `Diff: ${wt.mergeBase.slice(0, 7)}..${wt.headSha.slice(0, 7)}.` : ""}`,
+        href: `/p/${project.slug}/roadmap/${wt.featureSlug}`,
+      });
+    }
+  }
+
+  for (const it of items) {
+    if (it.status === "deferred") continue;
+
+    if (concernsOpen(it.dir)) {
+      queue.push({
+        kind: "review-concerns",
+        priority: QUEUE_KIND_PRIORITY["review-concerns"],
+        featureId: it.id,
+        featureSlug: it.slug,
+        featureTitle: it.title,
+        context: "concerns.md is open. Decide whether each concern is accepted, an open question, or non-blocking.",
+        href: `/p/${project.slug}/roadmap/${it.slug}`,
+      });
+      continue;
+    }
+
+    if (it.status === "blocked" || it.hasArtifact["open-questions.md"]) {
+      queue.push({
+        kind: "answer-open-questions",
+        priority: QUEUE_KIND_PRIORITY["answer-open-questions"],
+        featureId: it.id,
+        featureSlug: it.slug,
+        featureTitle: it.title,
+        context: it.hasArtifact["open-questions.md"]
+          ? "open-questions.md awaits your answer."
+          : `Status: blocked.`,
+        href: `/p/${project.slug}/roadmap/${it.slug}`,
+      });
+      continue;
+    }
+
+    if (
+      it.prototypeCount > 0 &&
+      (!it.hasArtifact["ux-review.md"] || reviewVerdictNeedsRework(it.dir, "ux-review.md"))
+    ) {
+      queue.push({
+        kind: "review-prototypes",
+        priority: QUEUE_KIND_PRIORITY["review-prototypes"],
+        featureId: it.id,
+        featureSlug: it.slug,
+        featureTitle: it.title,
+        context: it.hasArtifact["ux-review.md"]
+          ? `ux-review.md verdict requested rework.`
+          : `${it.prototypeCount} prototype${it.prototypeCount === 1 ? "" : "s"} waiting for UX review.`,
+        href: `/p/${project.slug}/roadmap/${it.slug}`,
+      });
+      continue;
+    }
+
+    if (
+      it.hasArtifact["architecture.md"] &&
+      (!it.hasArtifact["architecture-review.md"] || reviewVerdictNeedsRework(it.dir, "architecture-review.md"))
+    ) {
+      queue.push({
+        kind: "review-architecture",
+        priority: QUEUE_KIND_PRIORITY["review-architecture"],
+        featureId: it.id,
+        featureSlug: it.slug,
+        featureTitle: it.title,
+        context: it.hasArtifact["architecture-review.md"]
+          ? `architecture-review.md verdict requested rework.`
+          : `architecture.md is written; needs your review before spec.`,
+        href: `/p/${project.slug}/roadmap/${it.slug}`,
+      });
+      continue;
+    }
+
+    if (!it.hasArtifact["notes.md"]) {
+      queue.push({
+        kind: "clarify-feature",
+        priority: QUEUE_KIND_PRIORITY["clarify-feature"],
+        featureId: it.id,
+        featureSlug: it.slug,
+        featureTitle: it.title,
+        context: "No notes.md yet. Capture a brief clarification.",
+        href: `/p/${project.slug}/roadmap/${it.slug}`,
+      });
+      continue;
+    }
+  }
+
+  for (const it of items) {
+    if (it.stage === "ready-for-build-queue" && !worktrees.some((wt) => wt.featureSlug === it.slug)) {
+      queue.push({
+        kind: "ready-to-promote",
+        priority: QUEUE_KIND_PRIORITY["ready-to-promote"],
+        featureId: it.id,
+        featureSlug: it.slug,
+        featureTitle: it.title,
+        context: "All PM artifacts present. Promote to a build worktree when ready.",
+        href: `/p/${project.slug}/roadmap/${it.slug}`,
+      });
+    }
+  }
+
+  return queue.sort((a, b) => a.priority - b.priority || Number(a.featureId) - Number(b.featureId));
+}
+
+export function buildActionQueue(project: Project): QueueItem[] {
+  const paths = roadmapPaths(project);
+  if (!paths) return [];
+  const items = readFeatures(paths.root);
+  const worktrees = listBuildWorktrees(project, items);
+  return computeActionQueue(project, items, worktrees);
+}
+
+export function renderTriageBody(project: Project, queue: QueueItem[], index: number): string {
+  if (queue.length === 0) {
+    return `
+      <h1>Triage</h1>
+      <div class="panel queue-panel queue-empty">
+        <p>Nothing in the queue. The PM and build loops are quiet.</p>
+        <p><a href="/p/${escape(project.slug)}">← back to ${escape(project.name)}</a></p>
+      </div>`;
+  }
+
+  const i = Math.max(0, Math.min(index, queue.length - 1));
+  const current = queue[i]!;
+  const prev = i > 0 ? i - 1 : null;
+  const next = i < queue.length - 1 ? i + 1 : null;
+
+  const list = queue
+    .map(
+      (q, n) =>
+        `<li class="${n === i ? "current" : ""}"><a href="?i=${n}">${escape(QUEUE_KIND_LABEL[q.kind])} — ${escape(q.featureTitle)}</a></li>`,
+    )
+    .join("");
+
+  return `
+    <h1>Triage <span class="muted">${i + 1} / ${queue.length}</span></h1>
+
+    <div class="triage-card">
+      <div class="triage-card-head">
+        <span class="queue-kind queue-kind-${escape(current.kind)}">${escape(QUEUE_KIND_LABEL[current.kind])}</span>
+        <span class="muted">item ${escape(current.featureId)}</span>
+      </div>
+      <h2>${escape(current.featureTitle)}</h2>
+      <p>${escape(current.context)}</p>
+      <div class="triage-actions">
+        <a class="triage-act" href="${escape(current.href)}">Open feature →</a>
+      </div>
+    </div>
+
+    <nav class="triage-nav">
+      ${prev !== null ? `<a class="triage-prev" href="?i=${prev}" accesskey="p">← Previous (p)</a>` : `<span class="triage-prev muted">— start —</span>`}
+      ${next !== null ? `<a class="triage-next" href="?i=${next}" accesskey="n">Next (n) →</a>` : `<span class="triage-next muted">— end —</span>`}
+      <a class="triage-back" href="/p/${escape(project.slug)}">back to ${escape(project.name)}</a>
+    </nav>
+
+    <details class="triage-overview">
+      <summary>All ${queue.length} items</summary>
+      <ol class="triage-overview-list">${list}</ol>
+    </details>
+
+    <script>
+      document.addEventListener("keydown", (e) => {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        if (e.key === "j" || e.key === "ArrowDown") { const a = document.querySelector(".triage-next"); if (a instanceof HTMLAnchorElement) a.click(); }
+        if (e.key === "k" || e.key === "ArrowUp") { const a = document.querySelector(".triage-prev"); if (a instanceof HTMLAnchorElement) a.click(); }
+        if (e.key === "Enter") { const a = document.querySelector(".triage-act"); if (a instanceof HTMLAnchorElement) a.click(); }
+      });
+    </script>`;
+}
+
+function renderActionQueue(project: Project, queue: QueueItem[]): string {
+  if (queue.length === 0) {
+    return `
+      <section class="panel wide queue-panel queue-empty">
+        <h2>Action queue</h2>
+        <p class="muted">Nothing needs your attention. The PM and build loops are running cleanly.</p>
+      </section>`;
+  }
+
+  const rows = queue
+    .map(
+      (q) => `
+        <li class="queue-row queue-${escape(q.kind)}">
+          <a class="queue-link" href="${escape(q.href)}">
+            <span class="queue-kind">${escape(QUEUE_KIND_LABEL[q.kind])}</span>
+            <span class="queue-feature"><strong>${escape(q.featureTitle)}</strong> <span class="muted">(item ${escape(q.featureId)})</span></span>
+            <span class="queue-context">${escape(q.context)}</span>
+          </a>
+        </li>`,
+    )
+    .join("");
+
+  return `
+    <section class="panel wide queue-panel">
+      <div class="queue-header">
+        <h2>Action queue <span class="badge attention-badge">${queue.length}</span></h2>
+        <a class="queue-triage-link" href="/p/${escape(project.slug)}/queue">Triage one at a time →</a>
+      </div>
+      <ol class="queue-list">${rows}</ol>
+    </section>`;
+}
+
+function renderSummary(project: Project, items: FeatureItem[], readyWorktrees: number): string {
+  const blocked = items.filter((it) => it.status === "blocked" || it.hasArtifact["open-questions.md"]).length;
   const promotionItems = items
     .filter(isReadyForPromotion)
     .map((item) => ({ item, state: promotionState(project, item) }));
   const readyForBuild = promotionItems.filter(({ state }) => !state.promoted).length;
-  const promoted = promotionItems.filter(({ state }) => state.promoted).length;
 
   const card = (label: string, value: number, klass = "") =>
     `<div class="summary-item"><div class="label">${escape(label)}</div><div class="value ${klass}">${value}</div></div>`;
 
   return `
     <section class="summary">
-      ${card("Items", items.length)}
-      ${card("Prototypes", totalPrototypes)}
-      ${card("Open Feedback", openFeedback, openFeedback > 0 ? "attention" : "ok")}
+      ${card("Active items", items.filter((it) => it.status !== "deferred").length)}
       ${card("Blocked", blocked, blocked > 0 ? "attention" : "ok")}
-      ${card("Open Questions", openQuestions, openQuestions > 0 ? "attention" : "ok")}
-      ${card("Ready For Build", readyForBuild, "ok")}
-      ${card("Promoted", promoted, promoted > 0 ? "ok" : "")}
+      ${card("Ready to promote", readyForBuild, readyForBuild > 0 ? "ok" : "")}
+      ${card("Worktrees ready to merge", readyWorktrees, readyWorktrees > 0 ? "ok" : "")}
     </section>`;
 }
 
@@ -1100,13 +1361,20 @@ export const roadmapPlugin: Plugin = {
     const paths = roadmapPaths(ctx.project);
     if (!paths) return `<p class="muted">No roadmap directory.</p>`;
     const items = readFeatures(paths.root);
+    const worktrees = listBuildWorktrees(ctx.project, items);
+    const readyWorktrees = worktrees.filter((wt) => wt.isReady).length;
+    const queue = computeActionQueue(ctx.project, items, worktrees);
     return `
-      ${renderSummary(ctx.project, items)}
-      ${renderPromotionPanel(ctx.project, items, paths)}
-      ${renderBuildWorktreesPanel(ctx.project, items)}
-      ${renderNextActions(ctx.project, items, paths)}
+      ${renderActionQueue(ctx.project, queue)}
+      ${renderSummary(ctx.project, items, readyWorktrees)}
       ${renderFeatureTable(ctx.project, items)}
-      ${renderActionForms(ctx.project, paths, items)}`;
+      <details class="reference-details">
+        <summary>Reference panels (worktree state, promotion queue, capture forms)</summary>
+        ${renderBuildWorktreesPanel(ctx.project, items)}
+        ${renderPromotionPanel(ctx.project, items, paths)}
+        ${renderNextActions(ctx.project, items, paths)}
+        ${renderActionForms(ctx.project, paths, items)}
+      </details>`;
   },
 
   summary(ctx) {

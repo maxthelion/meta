@@ -6,7 +6,7 @@ import type { Project } from "./types.ts";
 import { renderHome } from "./render/home.ts";
 import { renderProject } from "./render/project.ts";
 import { renderFeature } from "./render/feature.ts";
-import { renderReviewPrototypesPage } from "./plugins/roadmap.ts";
+import { renderReviewPrototypesPage, buildActionQueue, renderTriageBody } from "./plugins/roadmap.ts";
 import { layout } from "./render/layout.ts";
 
 const CONFIG_PATH = resolve(import.meta.dir, "..", "config.yaml");
@@ -110,6 +110,23 @@ const server = Bun.serve({
 
       if (rest === "" && req.method === "GET") {
         return html(await renderProject(project, readFlash(req)));
+      }
+
+      if (rest === "queue" && req.method === "GET") {
+        const queue = buildActionQueue(project);
+        const i = parseInt(url.searchParams.get("i") ?? "0", 10) || 0;
+        const body = renderTriageBody(project, queue, i);
+        return html(
+          layout({
+            title: `Triage — ${project.name}`,
+            body,
+            breadcrumbs: [
+              { label: "projects", href: "/" },
+              { label: project.name, href: `/p/${project.slug}` },
+              { label: "triage" },
+            ],
+          }),
+        );
       }
 
       const featureMatch = rest.match(/^roadmap\/([^/]+)$/);
