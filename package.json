@@ -7,6 +7,7 @@
     "start": "bun run src/server.ts",
     "dev": "bun --watch run src/server.ts",
     "bundle": "bun run src/cli/bundle.ts",
+    "orchestrator": "bun run src/cli/orchestrator.ts",
     "pm-loop": "bun run src/cli/bundle.ts"
   },
   "bin": {
@@ -14,6 +15,7 @@
   },
   "dependencies": {
     "gray-matter": "^4.0.3",
+    "markdown-it": "^14.1.1",
     "yaml": "^2.7.1"
   },
   "devDependencies": {

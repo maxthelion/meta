@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ActionDef, ActionRequest, ActionResult, Plugin, Project } from "../types.ts";
 import { escape, fileUrl } from "../util/html.ts";
 import { readFrontmatter } from "../util/frontmatter.ts";
+import { renderMarkdown } from "../util/markdown.ts";
+import { parseConcerns, parseOpenQuestions } from "../util/atomic-items.ts";
 
 interface RoadmapPaths {
   root: string;
@@ -713,6 +715,12 @@ interface QueueItem {
   featureTitle: string;
   context: string;
   href: string;
+  // Optional atomic-item scoping: when set, this queue entry refers to a
+  // single concern / question / prototype / etc. inside the feature's
+  // artefact, not the whole file.
+  subId?: string;
+  subTitle?: string;
+  subBody?: string;
 }
 
 const QUEUE_KIND_LABEL: Record<QueueItem["kind"], string> = {
@@ -774,30 +782,72 @@ function computeActionQueue(
     if (it.status === "deferred") continue;
 
     if (concernsOpen(it.dir)) {
-      queue.push({
-        kind: "review-concerns",
-        priority: QUEUE_KIND_PRIORITY["review-concerns"],
-        featureId: it.id,
-        featureSlug: it.slug,
-        featureTitle: it.title,
-        context: "concerns.md is open. Decide whether each concern is accepted, an open question, or non-blocking.",
-        href: `/p/${project.slug}/roadmap/${it.slug}`,
-      });
+      const concernsPath = join(it.dir, "concerns.md");
+      const concerns = existsSync(concernsPath)
+        ? parseConcerns(readFileSync(concernsPath, "utf8"))
+        : [];
+      if (concerns.length > 0) {
+        for (const c of concerns) {
+          queue.push({
+            kind: "review-concerns",
+            priority: QUEUE_KIND_PRIORITY["review-concerns"],
+            featureId: it.id,
+            featureSlug: it.slug,
+            featureTitle: it.title,
+            context: `Concern ${c.id}: ${c.title}`,
+            href: `/p/${project.slug}/roadmap/${it.slug}`,
+            subId: c.id,
+            subTitle: c.title,
+            subBody: c.body,
+          });
+        }
+      } else {
+        queue.push({
+          kind: "review-concerns",
+          priority: QUEUE_KIND_PRIORITY["review-concerns"],
+          featureId: it.id,
+          featureSlug: it.slug,
+          featureTitle: it.title,
+          context: "concerns.md is open. Decide and resolve.",
+          href: `/p/${project.slug}/roadmap/${it.slug}`,
+        });
+      }
       continue;
     }
 
     if (it.status === "blocked" || it.hasArtifact["open-questions.md"]) {
-      queue.push({
-        kind: "answer-open-questions",
-        priority: QUEUE_KIND_PRIORITY["answer-open-questions"],
-        featureId: it.id,
-        featureSlug: it.slug,
-        featureTitle: it.title,
-        context: it.hasArtifact["open-questions.md"]
-          ? "open-questions.md awaits your answer."
-          : `Status: blocked.`,
-        href: `/p/${project.slug}/roadmap/${it.slug}`,
-      });
+      const oqPath = join(it.dir, "open-questions.md");
+      const questions = it.hasArtifact["open-questions.md"] && existsSync(oqPath)
+        ? parseOpenQuestions(readFileSync(oqPath, "utf8"))
+        : [];
+      if (questions.length > 0) {
+        for (const q of questions) {
+          queue.push({
+            kind: "answer-open-questions",
+            priority: QUEUE_KIND_PRIORITY["answer-open-questions"],
+            featureId: it.id,
+            featureSlug: it.slug,
+            featureTitle: it.title,
+            context: `Question ${q.id}: ${q.title}`,
+            href: `/p/${project.slug}/roadmap/${it.slug}`,
+            subId: q.id,
+            subTitle: q.title,
+            subBody: q.body,
+          });
+        }
+      } else {
+        queue.push({
+          kind: "answer-open-questions",
+          priority: QUEUE_KIND_PRIORITY["answer-open-questions"],
+          featureId: it.id,
+          featureSlug: it.slug,
+          featureTitle: it.title,
+          context: it.hasArtifact["open-questions.md"]
+            ? "open-questions.md awaits your answer."
+            : `Status: blocked.`,
+          href: `/p/${project.slug}/roadmap/${it.slug}`,
+        });
+      }
       continue;
     }
 
@@ -892,13 +942,41 @@ function readFileSafely(path: string): string {
   }
 }
 
+const FRONTMATTER_DISPLAY_KEYS = new Set([
+  "verdict",
+  "redirect_to",
+  "selected_prototype",
+  "applies_to",
+  "raised_during",
+  "status",
+]);
+
 function artefactBlock(label: string, content: string, openHref: string | null): string {
   if (!content.trim()) return `<p class="muted">${escape(label)} is empty or missing.</p>`;
-  const linkHtml = openHref ? ` <a href="${escape(openHref)}" target="_blank">open in new tab</a>` : "";
+  const linkHtml = openHref ? `<a href="${escape(openHref)}" target="_blank">open in new tab</a>` : "";
+
+  let bodyHtml: string;
+  let metaChips = "";
+  try {
+    const rendered = renderMarkdown(content);
+    bodyHtml = rendered.html;
+    const chips: string[] = [];
+    for (const [k, v] of Object.entries(rendered.frontmatter)) {
+      if (!FRONTMATTER_DISPLAY_KEYS.has(k)) continue;
+      const val = typeof v === "string" ? v : JSON.stringify(v);
+      if (!val || val === "[]" || val === "null") continue;
+      chips.push(`<span class="meta-chip"><strong>${escape(k)}</strong> ${escape(val)}</span>`);
+    }
+    if (chips.length > 0) metaChips = `<div class="meta-chips">${chips.join("")}</div>`;
+  } catch {
+    bodyHtml = `<pre class="triage-artefact-body-raw">${escape(content)}</pre>`;
+  }
+
   return `
     <div class="triage-artefact">
       <div class="triage-artefact-head"><strong>${escape(label)}</strong>${linkHtml}</div>
-      <pre class="triage-artefact-body">${escape(content)}</pre>
+      ${metaChips}
+      <div class="triage-artefact-body markdown-body">${bodyHtml}</div>
     </div>`;
 }
 
@@ -910,13 +988,14 @@ function captureFeedbackForm(
   placeholder: string,
   returnTo: string,
   buttonLabel: string,
+  prefill: string = "",
 ): string {
   return `
     <form class="triage-form" method="post" action="/p/${escape(project.slug)}/action/capture-feedback?return=${encodeURIComponent(returnTo)}">
       <input type="hidden" name="item-id" value="${escape(itemId)}">
       <input type="hidden" name="applies-to" value="${escape(appliesTo)}">
       <label>${escape(label)}</label>
-      <textarea name="text" required placeholder="${escape(placeholder)}" autofocus></textarea>
+      <textarea name="text" required placeholder="${escape(placeholder)}" autofocus>${escape(prefill)}</textarea>
       <div class="triage-form-actions">
         <button type="submit">${escape(buttonLabel)}</button>
       </div>
@@ -935,19 +1014,49 @@ function renderTriageCardBody(
 
   switch (current.kind) {
     case "review-concerns": {
+      if (current.subId && current.subBody !== undefined) {
+        const label = `Concern ${current.subId}: ${current.subTitle ?? ""}`;
+        return `
+          ${artefactBlock(label, current.subBody, `${featureFileBase}/concerns.md`)}
+          <p class="muted">One concern at a time. Decide accepted / open question / non-blocking + reasoning. Captured as feedback with <code>applies_to: concerns</code>; the PM-assistant updates <code>concerns.md</code> on next heartbeat.</p>
+          ${captureFeedbackForm(
+            project,
+            itemId,
+            "concerns",
+            `Decision for concern ${current.subId}`,
+            `Accepted because… / Open question — needs user input on … / Non-blocking; address in follow-up.`,
+            returnTo,
+            "Capture decision",
+            `Concern ${current.subId} (${current.subTitle ?? ""}):\n`,
+          )}`;
+      }
       const concerns = readFileSafely(join(dir, "concerns.md"));
       return `
         ${artefactBlock("concerns.md", concerns, `${featureFileBase}/concerns.md`)}
-        <p class="muted">Capture your decision below. The PM-assistant will pick this up via <code>address-feedback</code> and update <code>concerns.md</code> accordingly.</p>
-        ${captureFeedbackForm(project, itemId, "concerns", "Decision per concern (accepted / open question / non-blocking + reasoning)", "1. Accept (with constraint X). 2. Open question — needs user input on Y. 3. Non-blocking; address in follow-up.", returnTo, "Capture decision")}`;
+        ${captureFeedbackForm(project, itemId, "concerns", "Decision", "Accepted / open question / non-blocking + reasoning.", returnTo, "Capture decision")}`;
     }
 
     case "answer-open-questions": {
+      if (current.subId && current.subBody !== undefined) {
+        const label = `Question ${current.subId}: ${current.subTitle ?? ""}`;
+        return `
+          ${artefactBlock(label, current.subBody, `${featureFileBase}/open-questions.md`)}
+          <p class="muted">One question at a time. Captured as feedback with <code>applies_to: open-questions</code>; the PM-assistant incorporates it into the relevant artefact (<code>architecture.md</code>, <code>spec.md</code>, etc.) on next heartbeat.</p>
+          ${captureFeedbackForm(
+            project,
+            itemId,
+            "open-questions",
+            `Answer to question ${current.subId}`,
+            `Choose one of the listed options, or write a different answer with reasoning.`,
+            returnTo,
+            "Capture answer",
+            `Question ${current.subId} (${current.subTitle ?? ""}):\n`,
+          )}`;
+      }
       const oq = readFileSafely(join(dir, "open-questions.md"));
       return `
         ${artefactBlock("open-questions.md", oq, `${featureFileBase}/open-questions.md`)}
-        <p class="muted">Captured as feedback with <code>applies_to: open-questions</code>. The PM-assistant will incorporate it on next heartbeat.</p>
-        ${captureFeedbackForm(project, itemId, "open-questions", "Your answer", "1. Yes, do X because... 2. No, prefer Y. 3. We need more data — try a small experiment.", returnTo, "Capture answer")}`;
+        ${captureFeedbackForm(project, itemId, "open-questions", "Your answer", "Yes/no/option choice + reasoning.", returnTo, "Capture answer")}`;
     }
 
     case "review-prototypes": {
@@ -1055,12 +1164,12 @@ export function renderTriageBody(project: Project, queue: QueueItem[], index: nu
 
     <div class="triage-card">
       <div class="triage-card-head">
-        <span class="queue-kind queue-kind-${escape(current.kind)}">${escape(QUEUE_KIND_LABEL[current.kind])}</span>
-        <span class="muted">item ${escape(current.featureId)}</span>
+        <span class="queue-kind queue-kind-${escape(current.kind)}">${escape(QUEUE_KIND_LABEL[current.kind])}${current.subId ? ` #${escape(current.subId)}` : ""}</span>
+        <span class="muted">item ${escape(current.featureId)} · ${escape(current.featureTitle)}</span>
         <a class="muted triage-feature-link" href="${escape(current.href)}">open feature page →</a>
       </div>
-      <h2>${escape(current.featureTitle)}</h2>
-      <p class="triage-context">${escape(current.context)}</p>
+      <h2>${escape(current.subTitle ?? current.featureTitle)}</h2>
+      ${current.subId ? "" : `<p class="triage-context">${escape(current.context)}</p>`}
       ${renderTriageCardBody(project, current, returnTo)}
     </div>
 
@@ -1095,16 +1204,17 @@ function renderActionQueue(project: Project, queue: QueueItem[]): string {
   }
 
   const rows = queue
-    .map(
-      (q) => `
+    .map((q, i) => {
+      const triageHref = `/p/${escape(project.slug)}/queue?i=${i}`;
+      return `
         <li class="queue-row queue-${escape(q.kind)}">
-          <a class="queue-link" href="${escape(q.href)}">
-            <span class="queue-kind">${escape(QUEUE_KIND_LABEL[q.kind])}</span>
-            <span class="queue-feature"><strong>${escape(q.featureTitle)}</strong> <span class="muted">(item ${escape(q.featureId)})</span></span>
+          <a class="queue-link" href="${triageHref}">
+            <span class="queue-kind">${escape(QUEUE_KIND_LABEL[q.kind])}${q.subId ? ` <span class="queue-sub">#${escape(q.subId)}</span>` : ""}</span>
+            <span class="queue-feature"><strong>${escape(q.featureTitle)}</strong> <span class="muted">(item ${escape(q.featureId)})</span>${q.subTitle ? `<div class="queue-subtitle">${escape(q.subTitle)}</div>` : ""}</span>
             <span class="queue-context">${escape(q.context)}</span>
           </a>
-        </li>`,
-    )
+        </li>`;
+    })
     .join("");
 
   return `
