@@ -86,6 +86,8 @@ li + li { margin-top: 6px; }
 .badge.dormant { color: var(--dormant); }
 .badge.archived { color: var(--muted); }
 .badge.attention-badge { color: var(--attention); border-color: var(--attention); }
+.badge.ready { color: white; background: var(--ok); border-color: var(--ok); font-weight: 700; }
+tr.ready-row td { background: #f1f9f3; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td {
   border-bottom: 1px solid var(--border);

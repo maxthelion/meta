@@ -66,10 +66,18 @@ interface BuildWorktree {
   buildPlans: string[];
   nextAction: string;
   workItemPresent: boolean;
+  partialWorkPresent: boolean;
+  testsFailurePresent: boolean;
   critiqueCount: number;
   inboxCount: number;
   dirtyCount: number;
   openBuildScript: string | null;
+  isReady: boolean;
+  readyBlockers: string[];
+  lastReviewSha: string | null;
+  headSha: string;
+  mergeBase: string | null;
+  readyForUserPath: string | null;
 }
 
 const ARTIFACT_FILES = [
@@ -365,6 +373,51 @@ function listBuildWorktrees(project: Project, items: FeatureItem[]): BuildWorktr
       : [];
 
     const openBuildPath = join(path, "scripts", "open-latest-build.sh");
+    const stateDir = join(path, ".claude", "state");
+    const workItemPresent = existsSync(join(stateDir, "work-item.md"));
+    const partialWorkPresent = existsSync(join(stateDir, "partial-work.md"));
+    const testsFailurePresent = existsSync(join(stateDir, "last-tests-failure.md"));
+    const critiqueCount = countMarkdownFiles(join(stateDir, "review-queue"));
+    const inboxCount = countMarkdownFiles(join(stateDir, "inbox"));
+    const dirtyCount = gitOutput(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length;
+
+    const headSha = gitOutput(path, ["rev-parse", "HEAD"]) || "";
+    const lastReviewShaRaw = existsSync(join(stateDir, "last-review-sha"))
+      ? readFileSync(join(stateDir, "last-review-sha"), "utf8").trim()
+      : "";
+    const lastReviewSha = lastReviewShaRaw || null;
+    const lastTestsShaRaw = existsSync(join(stateDir, "last-tests-sha"))
+      ? readFileSync(join(stateDir, "last-tests-sha"), "utf8").trim()
+      : "";
+    const lastTestsSha = lastTestsShaRaw || null;
+
+    const mergeBaseCmd = gitOutput(path, ["merge-base", "HEAD", "origin/main"])
+      || gitOutput(path, ["merge-base", "HEAD", "main"])
+      || "";
+    const mergeBase = mergeBaseCmd || null;
+
+    const readyBlockers: string[] = [];
+    if (testsFailurePresent) readyBlockers.push("tests failure outstanding");
+    if (workItemPresent) readyBlockers.push("work item in progress");
+    if (partialWorkPresent) readyBlockers.push("partial work outstanding");
+    if (critiqueCount > 0) readyBlockers.push(`${critiqueCount} open critique${critiqueCount === 1 ? "" : "s"}`);
+    if (inboxCount > 0) readyBlockers.push(`${inboxCount} open inbox item${inboxCount === 1 ? "" : "s"}`);
+    if (!lastTestsSha) {
+      readyBlockers.push("tests not verified at any commit (no last-tests-sha)");
+    } else if (lastTestsSha !== headSha) {
+      readyBlockers.push(`last-tests-sha (${lastTestsSha.slice(0, 7)}) != HEAD (${headSha.slice(0, 7)})`);
+    }
+    if (!lastReviewSha) {
+      readyBlockers.push("HEAD has not been adversarially reviewed (no last-review-sha)");
+    } else if (lastReviewSha !== headSha) {
+      readyBlockers.push(`last-review-sha (${lastReviewSha.slice(0, 7)}) != HEAD (${headSha.slice(0, 7)})`);
+    }
+    const isReady = readyBlockers.length === 0 && headSha !== "";
+
+    const readyForUserPath = existsSync(join(stateDir, "ready-for-user.md"))
+      ? join(stateDir, "ready-for-user.md")
+      : null;
+
     out.push({
       name,
       path,
@@ -375,11 +428,19 @@ function listBuildWorktrees(project: Project, items: FeatureItem[]): BuildWorktr
       featureTitle: item?.title ?? featureSlug,
       buildPlans,
       nextAction: readNextAction(path),
-      workItemPresent: existsSync(join(path, ".claude", "state", "work-item.md")),
-      critiqueCount: countMarkdownFiles(join(path, ".claude", "state", "review-queue")),
-      inboxCount: countMarkdownFiles(join(path, ".claude", "state", "inbox")),
-      dirtyCount: gitOutput(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length,
+      workItemPresent,
+      partialWorkPresent,
+      testsFailurePresent,
+      critiqueCount,
+      inboxCount,
+      dirtyCount,
       openBuildScript: existsSync(openBuildPath) ? openBuildPath : null,
+      isReady,
+      readyBlockers,
+      lastReviewSha,
+      headSha,
+      mergeBase,
+      readyForUserPath,
     });
   }
 
@@ -556,14 +617,25 @@ function renderBuildWorktreesPanel(project: Project, items: FeatureItem[]): stri
            </form>`
         : `<span class="muted">no script</span>`;
 
+      const readyCell = wt.isReady
+        ? `<span class="badge ready">READY</span>` +
+          (wt.readyForUserPath
+            ? ` <a href="${escape(fileUrl(wt.readyForUserPath))}">summary</a>`
+            : "") +
+          (wt.mergeBase
+            ? `<div class="muted">diff <code>${escape(wt.mergeBase.slice(0, 7))}..${escape(wt.headSha.slice(0, 7))}</code></div>`
+            : "")
+        : `<span class="muted attention" title="${escape(wt.readyBlockers.join("; "))}">${wt.readyBlockers.length} blocker${wt.readyBlockers.length === 1 ? "" : "s"}</span>`;
+
       return `
-        <tr>
+        <tr${wt.isReady ? ' class="ready-row"' : ""}>
           <td>
             <a href="/p/${escape(project.slug)}/roadmap/${escape(wt.featureSlug)}">Item ${escape(wt.featureId)}: ${escape(wt.featureTitle)}</a>
             <div class="muted"><code>${escape(wt.name)}</code></div>
           </td>
           <td><code>${escape(wt.branch)}</code><br><span class="muted">${escape(wt.head)}</span></td>
           <td><span class="${actionClass}"><code>${escape(wt.nextAction)}</code></span><div>${counters}</div></td>
+          <td>${readyCell}</td>
           <td><a href="${escape(fileUrl(wt.path))}">${escape(wt.path)}</a></td>
           <td>${planLinks || `<span class="muted">none</span>`}</td>
           <td>${openBuildButton}</td>
@@ -571,13 +643,15 @@ function renderBuildWorktreesPanel(project: Project, items: FeatureItem[]): stri
     })
     .join("");
 
+  const readyCount = worktrees.filter((wt) => wt.isReady).length;
+
   return `
     <section class="panel wide build-worktrees-panel">
-      <h2>Implementation Worktrees</h2>
-      <p class="muted">Promoted roadmap features currently handed to the implementation behaviour-tree loop.</p>
+      <h2>Implementation Worktrees ${readyCount > 0 ? `<span class="badge ready">${readyCount} ready</span>` : ""}</h2>
+      <p class="muted">Promoted roadmap features currently handed to the implementation behaviour-tree loop. <strong>Ready</strong> means tests pass at HEAD, no open critiques, no work-item / partial-work / inbox items, and <code>last-review-sha == HEAD</code> — i.e., the latest commit has been adversarially reviewed.</p>
       <table>
         <thead>
-          <tr><th>Feature</th><th>Branch</th><th>BT action</th><th>Worktree</th><th>Build plan</th><th>Build</th></tr>
+          <tr><th>Feature</th><th>Branch</th><th>BT action</th><th>Ready</th><th>Worktree</th><th>Build plan</th><th>Build</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
